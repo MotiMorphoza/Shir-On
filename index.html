@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+  <title>Language Learning Hub</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#111">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ========== HOME SCREEN ========== -->
+  <div id="homeScreen" class="screen active">
+    <div class="logo">🌍</div>
+    <h1 class="main-title">Language Learning Hub</h1>
+    <p class="subtitle">Master any language through games</p>
+
+    <!-- Language Selection -->
+    <div class="card">
+      <label class="label">Choose Language Pair</label>
+      <select id="langSelect">
+        <option value="">Select language...</option>
+      </select>
+    </div>
+
+    <!-- Game Selection -->
+    <div class="card" id="gameSelectionCard" style="display: none;">
+      <label class="label">Choose Learning Method</label>
+      <div class="game-grid">
+        <div class="game-card" data-game="flashcards">
+          <div class="game-icon">🎴</div>
+          <div class="game-title">Flash Cards</div>
+          <div class="game-desc">Classic memory training</div>
+        </div>
+        
+        <div class="game-card" data-game="wordmatch">
+          <div class="game-icon">🧩</div>
+          <div class="game-title">Word Match</div>
+          <div class="game-desc">Fast-paced matching</div>
+        </div>
+        
+        <div class="game-card" data-game="wordpuzzle">
+          <div class="game-icon">🔤</div>
+          <div class="game-title">Word Puzzle</div>
+          <div class="game-desc">Build sentences</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Topic Selection (appears after game selected) -->
+    <div id="topicSelectionCard" class="card" style="display: none;">
+      <label class="label">Choose Topic</label>
+      <div id="accordions"></div>
+    </div>
+
+    <!-- Statistics Button -->
+    <button class="btn-secondary" onclick="Hub.showStats()" style="margin-top: 20px;">
+      📊 View Statistics
+    </button>
+
+    <div class="version">v3.0</div>
+  </div>
+
+  <!-- ========== GAME CONTAINER ========== -->
+  <div id="gameContainer"></div>
+
+  <!-- ========== STATS SCREEN ========== -->
+  <div id="statsScreen" class="screen">
+    <h2 class="screen-title">📊 Statistics</h2>
+    <div id="statsContent" class="card"></div>
+    <button class="btn-secondary" onclick="Hub.showHome()">Back to Home</button>
+  </div>
+
+</div>
+
+<script src="hubIndex.js"></script>
+<script src="lib.js"></script>
+<script src="games.js"></script>
+<script src="hub.js"></script>
+
+</body>
+</html>
