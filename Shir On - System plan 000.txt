@@ -1,0 +1,2199 @@
+Personal Song Library + Printable Songbook
+
+This is a solid, well-scoped spec. Here's a complete implementation plan with all the code you need to get running.
+
+Architecture Overview
+
+``
+songbook/
+├── backend/
+│   ├── src/
+│   │   ├── db/              # SQLite setup, migrations, models
+│   │   ├── providers/       # Spotify + lyrics providers
+│   │   ├── services/        # Business logic
+│   │   ├── routes/          # API endpoints
+│   │   ├── print/           # PDF generation engine
+│   │   └── utils/           # Normalization, fuzzy match, sanitize
+│   ├── data/                # songbook.db lives here
+│   └── index.js
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   ├── api/             # API client
+│   │   └── main.js
+│   └── index.html
+└── package.json (root workspace)
+`
+
+Part 1 — Backend
+backend/package.json
+
+`json
+{
+  "name": "songbook-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "migrate": "node src/db/migrate.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.18.3",
+    "fuse.js": "^7.0.0",
+    "puppeteer": "^22.4.0",
+    "uuid": "^9.0.0",
+    "axios": "^1.6.7",
+    "dompurify": "^3.0.9",
+    "jsdom": "^24.0.0",
+    "express-validator": "^7.0.1",
+    "multer": "^1.4.5-lts.1",
+    "csv-parse": "^5.5.3",
+    "dotenv": "^16.4.5"
+  }
+}
+`
+
+backend/src/db/schema.sql
+
+`sql
+PRAGMA journalmode=WAL;
+PRAGMA foreignkeys=ON;
+
+CREATE TABLE IF NOT EXISTS artists (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  normalized TEXT NOT NULL,
+  createdat TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS albums (
+  id            TEXT PRIMARY KEY,
+  title         TEXT NOT NULL,
+  normalized    TEXT NOT NULL,
+  artistid     TEXT REFERENCES artists(id),
+  year          INTEGER,
+  coverurl     TEXT,
+  spotifyid    TEXT UNIQUE,
+  createdat    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS songs (
+  id               TEXT PRIMARY KEY,
+  title            TEXT NOT NULL,
+  normalizedtitle TEXT NOT NULL,
+  artistid        TEXT REFERENCES artists(id),
+  albumid         TEXT REFERENCES albums(id),
+  tracknumber     INTEGER,
+  year             INTEGER,
+  language         TEXT DEFAULT 'unknown',
+  versiontype     TEXT,
+  spotifyid       TEXT UNIQUE,
+  spotifyurl      TEXT,
+  coverurl        TEXT,
+  lyricsstatus    TEXT DEFAULT 'missing'
+                   CHECK(lyricsstatus IN
+                     ('missing','auto','manual','reviewed')),
+  isprintready   INTEGER DEFAULT 0,
+  createdat       TEXT DEFAULT (datetime('now')),
+  updatedat       TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS lyrics (
+  id               TEXT PRIMARY KEY,
+  songid          TEXT NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+  text             TEXT NOT NULL,
+  source           TEXT,
+  confidencescore REAL DEFAULT 0,
+  isverified      INTEGER DEFAULT 0,
+  createdat       TEXT DEFAULT (datetime('now')),
+  updatedat       TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS tags (
+  id   TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS songtags (
+  songid TEXT REFERENCES songs(id) ON DELETE CASCADE,
+  tagid  TEXT REFERENCES tags(id)  ON DELETE CASCADE,
+  PRIMARY KEY (songid, tagid)
+);
+
+CREATE TABLE IF NOT EXISTS collections (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  createdat  TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS collectionsongs (
+  collectionid TEXT REFERENCES collections(id) ON DELETE CASCADE,
+  songid       TEXT REFERENCES songs(id)        ON DELETE CASCADE,
+  position      INTEGER DEFAULT 0,
+  PRIMARY KEY (collectionid, songid)
+);
+
+CREATE TABLE IF NOT EXISTS printsets (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  config     TEXT NOT NULL,   -- JSON blob: format, layout, mode, etc.
+  createdat TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS printsetsongs (
+  printsetid TEXT REFERENCES printsets(id) ON DELETE CASCADE,
+  songid      TEXT REFERENCES songs(id)       ON DELETE CASCADE,
+  position     INTEGER DEFAULT 0,
+  PRIMARY KEY (printsetid, songid)
+);
+
+CREATE INDEX IF NOT EXISTS idxsongsartist    ON songs(artistid);
+CREATE INDEX IF NOT EXISTS idxsongsalbum     ON songs(albumid);
+CREATE INDEX IF NOT EXISTS idxsongsstatus    ON songs(lyricsstatus);
+CREATE INDEX IF NOT EXISTS idxsongsnormalized ON songs(normalizedtitle);
+CREATE INDEX IF NOT EXISTS idxlyricssong     ON lyrics(songid);
+`
+
+backend/src/db/migrate.js
+
+`js
+import Database from 'better-sqlite3';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { mkdirSync } from 'fs';
+
+const dirname = dirname(fileURLToPath(import.meta.url));
+const DATADIR  = join(_dirname, '../../data');
+const DBPATH   = join(DATADIR, 'songbook.db');
+
+mkdirSync(DATADIR, { recursive: true });
+
+const db     = new Database(DBPATH);
+const schema = readFileSync(join(dirname, 'schema.sql'), 'utf8');
+db.exec(schema);
+console.log('✓ Database migrated:', DBPATH);
+db.close();
+`
+
+backend/src/db/index.js
+
+`js
+import Database from 'better-sqlite3';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { mkdirSync } from 'fs';
+
+const _dirname = dirname(fileURLToPath(import.meta.url));
+const DATADIR  = join(_dirname, '../../data');
+const DBPATH   = join(DATADIR, 'songbook.db');
+
+mkdirSync(DATADIR, { recursive: true });
+
+const db = new Database(DBPATH);
+db.pragma('journalmode = WAL');
+db.pragma('foreignkeys = ON');
+
+export default db;
+`
+
+backend/src/utils/normalize.js
+
+`js
+/*
+  Normalize a string for matching:
+  lowercase, strip punctuation, collapse whitespace,
+  remove "feat.", "ft.", "featuring" credits.
+ /
+export function normalize(str = '') {
+  return str
+    .toLowerCase()
+    .replace(/\(feat\..?\)/gi, '')
+    .replace(/\[feat\..?\]/gi, '')
+    .replace(/feat\..?(?=\s|$)/gi, '')
+    .replace(/\bft\..?(?=\s|$)/gi, '')
+    .replace(/\bfeaturing\b.?(?=\s|$)/gi, '')
+    .replace(/[^\w\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/*
+  Similarity ratio between two normalized strings (0–1).
+  Simple Levenshtein-based ratio for confidence scoring.
+ /
+export function similarity(a, b) {
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (na === nb) return 1;
+  const dist = levenshtein(na, nb);
+  const maxLen = Math.max(na.length, nb.length);
+  return maxLen === 0 ? 1 : 1 - dist / maxLen;
+}
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (, i) =>
+    Array.from({ length: n + 1 }, (, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1]
+        ? dp[i-1][j-1]
+        : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return dp[m][n];
+}
+`
+
+backend/src/utils/sanitize.js
+
+`js
+import { JSDOM } from 'jsdom';
+import DOMPurify from 'dompurify';
+
+const { window } = new JSDOM('');
+const purify = DOMPurify(window);
+
+/*
+  Strip all HTML tags from user content.
+  Use before storing or rendering any user-supplied text.
+ /
+export function sanitizeText(str = '') {
+  return purify.sanitize(str, { ALLOWEDTAGS: [], ALLOWEDATTR: [] });
+}
+
+/*
+  Allow a limited safe subset for lyrics display
+  (line breaks only — no scripts, no styles).
+ /
+export function sanitizeLyrics(str = '') {
+  return purify.sanitize(str, {
+    ALLOWEDTAGS: ['br'],
+    ALLOWEDATTR: [],
+  });
+}
+`
+
+backend/src/providers/spotify.js
+
+`js
+import axios from 'axios';
+
+const BASE = 'https://api.spotify.com/v1';
+
+export class SpotifyProvider {
+  #token = null;
+  #tokenExpiry = 0;
+
+  constructor({ clientId, clientSecret }) {
+    this.clientId = clientId;
+    this.clientSecret = clientSecret;
+  }
+
+  async #getToken() {
+    if (this.#token && Date.now() < this.#tokenExpiry) return this.#token;
+
+    const res = await axios.post(
+      'https://accounts.spotify.com/api/token',
+      new URLSearchParams({ granttype: 'clientcredentials' }),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: Basic ${Buffer.from(
+            ${this.clientId}:${this.clientSecret}
+          ).toString('base64')},
+        },
+      }
+    );
+
+    this.#token = res.data.accesstoken;
+    this.#tokenExpiry = Date.now() + res.data.expiresin  1000 - 5000;
+    return this.#token;
+  }
+
+  async #get(path, params = {}) {
+    const token = await this.#getToken();
+    const res = await axios.get(${BASE}${path}, {
+      headers: { Authorization: Bearer ${token} },
+      params,
+    });
+    return res.data;
+  }
+
+  /
+    Fetch all tracks from a playlist (handles pagination).
+   /
+  async getPlaylistTracks(playlistId) {
+    const tracks = [];
+    let url = /playlists/${playlistId}/tracks;
+    let params = { limit: 100, offset: 0 };
+
+    while (url) {
+      const data = await this.#get(url.replace(BASE, ''), params);
+      for (const item of data.items) {
+        if (item.track && item.track.id) tracks.push(this.#mapTrack(item.track));
+      }
+      // Spotify returns full next URL; we only need path+params handled above
+      url = data.next ? null : null; // pagination via offset
+      if (data.next) {
+        params = { ...params, offset: params.offset + 100 };
+        url = /playlists/${playlistId}/tracks;
+      } else {
+        url = null;
+      }
+    }
+
+    return tracks;
+  }
+
+  async getAlbumTracks(albumId) {
+    const album = await this.#get(/albums/${albumId});
+    return album.tracks.items.map(t => this.#mapTrack(t, album));
+  }
+
+  async getPlaylistMeta(playlistId) {
+    return this.#get(/playlists/${playlistId}, {
+      fields: 'id,name,description,images',
+    });
+  }
+
+  #mapTrack(track, albumOverride = null) {
+    const album = albumOverride || track.album || {};
+    return {
+      spotifyid:   track.id,
+      spotifyurl:  track.externalurls?.spotify || null,
+      title:        track.name,
+      artist:       track.artists?.map(a => a.name).join(', ') || '',
+      album:        album.name  || '',
+      albumspotifyid: album.id || null,
+      tracknumber: track.tracknumber || null,
+      year:         parseInt((album.releasedate || '0').slice(0, 4)) || null,
+      coverurl:    album.images?.[0]?.url || null,
+    };
+  }
+}
+`
+
+backend/src/providers/lyrics/base.js
+
+`js
+/
+  All lyrics providers must extend this base class.
+ /
+export class BaseLyricsProvider {
+  get name() { return 'base'; }
+
+  /
+    @param {string} title
+    @param {string} artist
+    @returns {Promise<{lyricstext: string, source: string, confidencescore: number} | null>}
+   /
+  // eslint-disable-next-line no-unused-vars
+  async fetch(title, artist) {
+    throw new Error(${this.name}.fetch() not implemented);
+  }
+}
+`
+
+backend/src/providers/lyrics/lyricsovh.js
+
+`js
+import axios from 'axios';
+import { BaseLyricsProvider } from './base.js';
+import { normalize, similarity } from '../../utils/normalize.js';
+
+/
+  Provider 1: lyrics.ovh (free, no key required)
+  Docs: https://lyricsovh.docs.apiary.io/
+ /
+export class LyricsOvhProvider extends BaseLyricsProvider {
+  get name() { return 'lyrics.ovh'; }
+
+  async fetch(title, artist) {
+    try {
+      const res = await axios.get(
+        https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)},
+        { timeout: 8000 }
+      );
+
+      const text = res.data?.lyrics?.trim();
+      if (!text || text.length < 20) return null;
+
+      // Rough confidence: how well do the returned path parts match our query
+      const score = (similarity(title, title) + similarity(artist, artist)) / 2;
+
+      return {
+        lyricstext:      text,
+        source:           this.name,
+        confidencescore: score,
+      };
+    } catch {
+      return null;
+    }
+  }
+}
+`
+
+backend/src/providers/lyrics/lrclib.js
+
+`js
+import axios from 'axios';
+import { BaseLyricsProvider } from './base.js';
+import { normalize, similarity } from '../../utils/normalize.js';
+
+/*
+  Provider 2: lrclib.net — free, open lyric database
+  Docs: https://lrclib.net/docs
+ /
+export class LrclibProvider extends BaseLyricsProvider {
+  get name() { return 'lrclib.net'; }
+
+  async fetch(title, artist) {
+    try {
+      const res = await axios.get('https://lrclib.net/api/search', {
+        params: { trackname: title, artistname: artist },
+        timeout: 8000,
+      });
+
+      const results = res.data;
+      if (!Array.isArray(results) || results.length === 0) return null;
+
+      // Pick the best match by title+artist similarity
+      const scored = results
+        .filter(r => r.plainLyrics)
+        .map(r => ({
+          ...r,
+          score:
+            (similarity(title, r.trackName) + similarity(artist, r.artistName)) / 2,
+        }))
+        .sort((a, b) => b.score - a.score);
+
+      if (!scored.length || scored[0].score < 0.4) return null;
+
+      return {
+        lyricstext:      scored[0].plainLyrics.trim(),
+        source:           this.name,
+        confidencescore: scored[0].score,
+      };
+    } catch {
+      return null;
+    }
+  }
+}
+`
+
+backend/src/providers/lyrics/index.js
+
+`js
+import { LyricsOvhProvider } from './lyricsovh.js';
+import { LrclibProvider }    from './lrclib.js';
+
+const PROVIDERS = [
+  new LrclibProvider(),
+  new LyricsOvhProvider(),
+];
+
+const CONFIDENCETHRESHOLD = 0.5;
+
+/*
+  Try each provider in order.
+  Returns the first result above the confidence threshold,
+  or the best result found, or null if all fail.
+ /
+export async function fetchLyrics(title, artist) {
+  let best = null;
+
+  for (const provider of PROVIDERS) {
+    try {
+      const result = await provider.fetch(title, artist);
+      if (!result) continue;
+
+      if (result.confidencescore >= CONFIDENCETHRESHOLD) return result;
+      if (!best || result.confidencescore > best.confidencescore) best = result;
+    } catch {
+      // provider failed silently — try next
+    }
+  }
+
+  return best; // may be null
+}
+`
+
+backend/src/services/songService.js
+
+`js
+import { v4 as uuidv4 } from 'uuid';
+import db               from '../db/index.js';
+import { normalize }    from '../utils/normalize.js';
+import { sanitizeText } from '../utils/sanitize.js';
+import { fetchLyrics }  from '../providers/lyrics/index.js';
+
+const CONFIDENCEREVIEWTHRESHOLD = 0.6;
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function upsertArtist(name) {
+  const norm = normalize(name);
+  const existing = db.prepare(
+    'SELECT  FROM artists WHERE normalized = ?'
+  ).get(norm);
+  if (existing) return existing;
+
+  const id = uuidv4();
+  db.prepare(
+    'INSERT INTO artists (id, name, normalized) VALUES (?, ?, ?)'
+  ).run(id, sanitizeText(name), norm);
+  return db.prepare('SELECT  FROM artists WHERE id = ?').get(id);
+}
+
+function upsertAlbum({ title, artistId, year, coverUrl, spotifyId }) {
+  const norm = normalize(title);
+  const existing = db.prepare(
+    'SELECT  FROM albums WHERE normalized = ? AND artistid = ?'
+  ).get(norm, artistId);
+  if (existing) return existing;
+
+  const id = uuidv4();
+  db.prepare(
+    INSERT INTO albums (id, title, normalized, artistid, year, coverurl, spotifyid)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+  ).run(id, sanitizeText(title), norm, artistId, year, coverUrl, spotifyId);
+  return db.prepare('SELECT  FROM albums WHERE id = ?').get(id);
+}
+
+// ─── Core ────────────────────────────────────────────────────────────────────
+
+export function getSongs({ search, artist, album, year, status, tags, printReady, sort = 'title', page = 1, limit = 50 } = {}) {
+  let sql = 
+    SELECT s., ar.name AS artistname, al.title AS albumtitle
+    FROM songs s
+    LEFT JOIN artists ar ON s.artistid = ar.id
+    LEFT JOIN albums  al ON s.albumid  = al.id
+    WHERE 1=1
+  ;
+  const params = [];
+
+  if (search) {
+    sql += ' AND (s.normalizedtitle LIKE ? OR ar.normalized LIKE ?)';
+    const q = %${normalize(search)}%;
+    params.push(q, q);
+  }
+  if (artist)     { sql += ' AND ar.name = ?';            params.push(artist); }
+  if (album)      { sql += ' AND al.title = ?';           params.push(album); }
+  if (year)       { sql += ' AND s.year = ?';             params.push(year); }
+  if (status)     { sql += ' AND s.lyricsstatus = ?';    params.push(status); }
+  if (printReady !== undefined) {
+    sql += ' AND s.isprintready = ?';
+    params.push(printReady ? 1 : 0);
+  }
+
+  if (tags?.length) {
+    sql += 
+      AND s.id IN (
+        SELECT songid FROM songtags st
+        JOIN tags t ON st.tagid = t.id
+        WHERE t.name IN (${tags.map(() => '?').join(',')})
+        GROUP BY songid HAVING COUNT() = ${tags.length}
+      )
+    ;
+    params.push(...tags);
+  }
+
+  const allowed = { title: 's.normalizedtitle', artist: 'ar.normalized', year: 's.year' };
+  sql +=  ORDER BY ${allowed[sort] || 's.normalizedtitle'};
+  sql +=  LIMIT ? OFFSET ?;
+  params.push(limit, (page - 1)  limit);
+
+  return db.prepare(sql).all(...params);
+}
+
+export function getSongById(id) {
+  const song = db.prepare(
+    SELECT s., ar.name AS artistname, al.title AS albumtitle
+     FROM songs s
+     LEFT JOIN artists ar ON s.artistid = ar.id
+     LEFT JOIN albums  al ON s.albumid  = al.id
+     WHERE s.id = ?
+  ).get(id);
+
+  if (!song) return null;
+
+  song.lyrics = db.prepare(
+    'SELECT  FROM lyrics WHERE songid = ? ORDER BY updatedat DESC LIMIT 1'
+  ).get(id) || null;
+
+  song.tags = db.prepare(
+    SELECT t.name FROM tags t
+     JOIN songtags st ON t.id = st.tagid
+     WHERE st.songid = ?
+  ).all(id).map(r => r.name);
+
+  return song;
+}
+
+export function createSong(data) {
+  const artist = upsertArtist(data.artist || 'Unknown');
+  const album  = data.album
+    ? upsertAlbum({ title: data.album, artistId: artist.id, year: data.year, coverUrl: data.coverurl, spotifyId: data.albumspotifyid })
+    : null;
+
+  const id = uuidv4();
+  db.prepare(
+    INSERT INTO songs
+      (id, title, normalizedtitle, artistid, albumid, tracknumber,
+       year, language, spotifyid, spotifyurl, coverurl, lyricsstatus)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')
+  ).run(
+    id,
+    sanitizeText(data.title),
+    normalize(data.title),
+    artist.id,
+    album?.id || null,
+    data.tracknumber || null,
+    data.year || null,
+    data.language || 'unknown',
+    data.spotifyid || null,
+    data.spotifyurl || null,
+    data.coverurl || null,
+  );
+
+  return getSongById(id);
+}
+
+export function updateSong(id, data) {
+  const fields = [];
+  const values = [];
+
+  const allowed = ['title', 'year', 'language', 'versiontype', 'isprintready'];
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      fields.push(${key} = ?);
+      values.push(typeof data[key] === 'string' ? sanitizeText(data[key]) : data[key]);
+    }
+  }
+
+  if (data.title) {
+    fields.push('normalizedtitle = ?');
+    values.push(normalize(data.title));
+  }
+
+  if (data.lyricsstatus) {
+    fields.push('lyricsstatus = ?');
+    values.push(data.lyricsstatus);
+  }
+
+  fields.push("updatedat = datetime('now')");
+  values.push(id);
+
+  db.prepare(UPDATE songs SET ${fields.join(', ')} WHERE id = ?).run(...values);
+  return getSongById(id);
+}
+
+export function deleteSong(id) {
+  db.prepare('DELETE FROM songs WHERE id = ?').run(id);
+}
+
+// ─── Lyrics ──────────────────────────────────────────────────────────────────
+
+export function saveLyrics(songId, { text, source = 'manual', confidenceScore = 1, isVerified = 0 }) {
+  const existing = db.prepare('SELECT id FROM lyrics WHERE songid = ?').get(songId);
+  const cleanText = sanitizeText(text);
+  const status = isVerified ? 'reviewed'
+    : source === 'manual' ? 'manual'
+    : confidenceScore >= CONFIDENCEREVIEWTHRESHOLD ? 'auto'
+    : 'missing';
+
+  if (existing) {
+    db.prepare(
+      UPDATE lyrics SET text = ?, source = ?, confidencescore = ?,
+       isverified = ?, updatedat = datetime('now')
+       WHERE songid = ?
+    ).run(cleanText, source, confidenceScore, isVerified ? 1 : 0, songId);
+  } else {
+    db.prepare(
+      INSERT INTO lyrics (id, songid, text, source, confidencescore, isverified)
+       VALUES (?, ?, ?, ?, ?, ?)
+    ).run(uuidv4(), songId, cleanText, source, confidenceScore, isVerified ? 1 : 0);
+  }
+
+  db.prepare(UPDATE songs SET lyricsstatus = ?, updatedat = datetime('now') WHERE id = ?)
+    .run(status, songId);
+
+  return getSongById(songId);
+}
+
+export async function autoFetchLyrics(songId) {
+  const song = getSongById(songId);
+  if (!song) throw new Error('Song not found');
+
+  const result = await fetchLyrics(song.title, song.artistname);
+  if (!result) return { fetched: false, song };
+
+  const updated = saveLyrics(songId, {
+    text:            result.lyricstext,
+    source:          result.source,
+    confidenceScore: result.confidencescore,
+    isVerified:      0,
+  });
+
+  return { fetched: true, song: updated };
+}
+
+// ─── Tags ────────────────────────────────────────────────────────────────────
+
+export function setTags(songId, tagNames) {
+  const clean = tagNames.map(t => sanitizeText(t.trim().toLowerCase())).filter(Boolean);
+
+  db.prepare('DELETE FROM songtags WHERE songid = ?').run(songId);
+
+  for (const name of clean) {
+    let tag = db.prepare('SELECT id FROM tags WHERE name = ?').get(name);
+    if (!tag) {
+      const id = uuidv4();
+      db.prepare('INSERT INTO tags (id, name) VALUES (?, ?)').run(id, name);
+      tag = { id };
+    }
+    db.prepare('INSERT OR IGNORE INTO songtags (songid, tagid) VALUES (?, ?)').run(songId, tag.id);
+  }
+}
+
+// ─── Bulk ────────────────────────────────────────────────────────────────────
+
+export function bulkUpdate(ids, data) {
+  const updateMany = db.transaction(() => {
+    for (const id of ids) updateSong(id, data);
+  });
+  updateMany();
+}
+
+// ─── Duplicates ──────────────────────────────────────────────────────────────
+
+export function findDuplicates() {
+  const songs = db.prepare(
+    SELECT s.id, s.normalizedtitle, ar.normalized AS artistnorm
+     FROM songs s LEFT JOIN artists ar ON s.artistid = ar.id
+  ).all();
+
+  const groups = [];
+  const used   = new Set();
+
+  for (let i = 0; i < songs.length; i++) {
+    if (used.has(songs[i].id)) continue;
+    const group = [songs[i]];
+    for (let j = i + 1; j < songs.length; j++) {
+      if (
+        songs[i].normalizedtitle === songs[j].normalizedtitle &&
+        songs[i].artistnorm      === songs[j].artistnorm
+      ) {
+        group.push(songs[j]);
+        used.add(songs[j].id);
+      }
+    }
+    if (group.length > 1) {
+      used.add(songs[i].id);
+      groups.push(group.map(s => getSongById(s.id)));
+    }
+  }
+
+  return groups;
+}
+
+export function mergeSongs(keepId, mergeIds, { useMetadataFrom, useLyricsFrom }) {
+  const merge = db.transaction(() => {
+    const meta   = getSongById(useMetadataFrom);
+    const lyrics = getSongById(useLyricsFrom);
+
+    updateSong(keepId, {
+      title:       meta.title,
+      year:        meta.year,
+      language:    meta.language,
+      spotifyid:  meta.spotifyid,
+      spotifyurl: meta.spotifyurl,
+    });
+
+    if (lyrics.lyrics) {
+      saveLyrics(keepId, {
+        text:            lyrics.lyrics.text,
+        source:          lyrics.lyrics.source,
+        confidenceScore: lyrics.lyrics.confidencescore,
+        isVerified:      lyrics.lyrics.isverified,
+      });
+    }
+
+    for (const id of mergeIds) deleteSong(id);
+  });
+
+  merge();
+  return getSongById(keepId);
+}
+`
+
+backend/src/services/importService.js
+
+`js
+import db             from '../db/index.js';
+import { createSong } from './songService.js';
+import { normalize }  from '../utils/normalize.js';
+
+export function importSpotifyTracks(tracks) {
+  const results = { imported: 0, skipped: 0, errors: [] };
+
+  const importAll = db.transaction(() => {
+    for (const track of tracks) {
+      try {
+        // Skip if spotifyid already exists
+        const exists = db.prepare(
+          'SELECT id FROM songs WHERE spotifyid = ?'
+        ).get(track.spotifyid);
+
+        if (exists) { results.skipped++; continue; }
+
+        // Check for title+artist near-duplicate
+        const normTitle  = normalize(track.title);
+        const normArtist = normalize(track.artist);
+        const nearDupe = db.prepare(
+          SELECT s.id FROM songs s
+           JOIN artists ar ON s.artistid = ar.id
+           WHERE s.normalizedtitle = ? AND ar.normalized = ?
+        ).get(normTitle, normArtist);
+
+        if (nearDupe) { results.skipped++; continue; }
+
+        createSong(track);
+        results.imported++;
+      } catch (err) {
+        results.errors.push({ track: track.title, error: err.message });
+      }
+    }
+  });
+
+  importAll();
+  return results;
+}
+
+export function importFromJSON(records) {
+  const results = { imported: 0, skipped: 0, errors: [] };
+  const importAll = db.transaction(() => {
+    for (const record of records) {
+      try {
+        if (!record.title) { results.errors.push({ record, error: 'Missing title' }); continue; }
+        createSong(record);
+        results.imported++;
+      } catch (err) {
+        results.errors.push({ record: record.title, error: err.message });
+      }
+    }
+  });
+  importAll();
+  return results;
+}
+`
+
+backend/src/services/collectionsService.js
+
+`js
+import { v4 as uuidv4 } from 'uuid';
+import db from '../db/index.js';
+import { sanitizeText } from '../utils/sanitize.js';
+
+export function getCollections() {
+  return db.prepare('SELECT  FROM collections ORDER BY name').all();
+}
+
+export function getCollection(id) {
+  const col = db.prepare('SELECT  FROM collections WHERE id = ?').get(id);
+  if (!col) return null;
+  col.songs = db.prepare(
+    SELECT s., ar.name AS artistname
+     FROM songs s
+     JOIN collectionsongs cs ON s.id = cs.songid
+     JOIN artists ar ON s.artistid = ar.id
+     WHERE cs.collectionid = ?
+     ORDER BY cs.position
+  ).all(id);
+  return col;
+}
+
+export function createCollection(name, description = '') {
+  const id = uuidv4();
+  db.prepare(
+    'INSERT INTO collections (id, name, description) VALUES (?, ?, ?)'
+  ).run(id, sanitizeText(name), sanitizeText(description));
+  return getCollection(id);
+}
+
+export function addSongToCollection(collectionId, songId) {
+  const maxPos = db.prepare(
+    'SELECT MAX(position) AS m FROM collectionsongs WHERE collectionid = ?'
+  ).get(collectionId)?.m ?? -1;
+  db.prepare(
+    'INSERT OR IGNORE INTO collectionsongs (collectionid, songid, position) VALUES (?, ?, ?)'
+  ).run(collectionId, songId, maxPos + 1);
+}
+
+export function removeSongFromCollection(collectionId, songId) {
+  db.prepare(
+    'DELETE FROM collectionsongs WHERE collectionid = ? AND songid = ?'
+  ).run(collectionId, songId);
+}
+`
+
+backend/src/print/engine.js
+
+`js
+import puppeteer from 'puppeteer';
+import { sanitizeText } from '../utils/sanitize.js';
+
+/
+  config shape:
+  {
+    format: 'A4' | 'A5',
+    columns: 1 | 2,
+    fontSize: 'small' | 'medium' | 'large',
+    lineSpacing: 'tight' | 'normal' | 'loose',
+    margins: 'narrow' | 'normal' | 'wide',
+    cleanMode: boolean,
+    performanceMode: boolean,
+    includeToc: boolean,
+    includeIndex: boolean,
+    breakMode: 'one-per-page' | 'continuous',
+  }
+ /
+
+const FONTSIZES = { small: '11px', medium: '13px', large: '16px' };
+const LINEHEIGHTS = { tight: 1.4, normal: 1.7, loose: 2.1 };
+const MARGINSIZES = { narrow: '12mm', normal: '18mm', wide: '25mm' };
+
+function formatLyrics(text) {
+  // Escape HTML, then restore newlines as <br>
+  return sanitizeText(text)
+    .replace(/\n{2,}/g, '</p><p class="verse">')
+    .replace(/\n/g, '<br>');
+}
+
+function songHtml(song, config) {
+  const lyrics   = song.lyrics?.text || '';
+  const bodyHtml = lyrics
+    ? <div class="lyrics"><p class="verse">${formatLyrics(lyrics)}</p></div>
+    : <p class="missing">— lyrics not available —</p>;
+
+  const header = config.cleanMode ? '' : 
+    <div class="song-header">
+      <h2 class="song-title">${sanitizeText(song.title)}</h2>
+      <p  class="song-meta">${sanitizeText(song.artistname)}${
+        song.albumtitle ?  · <em>${sanitizeText(song.albumtitle)}</em> : ''
+      }</p>
+    </div>;
+
+  const breakClass = config.breakMode === 'one-per-page' ? 'page-break' : 'song-block';
+  return <div class="${breakClass}">${header}${bodyHtml}</div>;
+}
+
+function tocHtml(songs) {
+  const rows = songs
+    .map((s, i) => <tr><td>${i + 1}</td><td>${sanitizeText(s.title)}</td><td>${sanitizeText(s.artistname)}</td></tr>)
+    .join('');
+  return 
+    <div class="page-break toc">
+      <h2>Table of Contents</h2>
+      <table><thead><tr><th>#</th><th>Title</th><th>Artist</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    </div>;
+}
+
+function indexHtml(songs) {
+  const sorted = [...songs].sort((a, b) => a.title.localeCompare(b.title));
+  const rows = sorted
+    .map(s => <tr><td>${sanitizeText(s.title)}</td><td>${sanitizeText(s.artistname)}</td></tr>)
+    .join('');
+  return 
+    <div class="page-break index">
+      <h2>Alphabetical Index</h2>
+      <table><thead><tr><th>Title</th><th>Artist</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    </div>;
+}
+
+function buildHtml(songs, config) {
+  const fontSize   = FONTSIZES[config.fontSize]   || FONTSIZES.medium;
+  const lineHeight = LINEHEIGHTS[config.lineSpacing] || LINEHEIGHTS.normal;
+  const margin     = MARGINSIZES[config.margins]   || MARGINSIZES.normal;
+  const columns    = config.performanceMode ? 1 : (config.columns || 1);
+  const perfSize   = config.performanceMode ? '18px' : fontSize;
+  const perfLH     = config.performanceMode ? 2.2 : lineHeight;
+
+  const songsHtml  = songs.map(s => songHtml(s, config)).join('\n');
+  const frontMatter = [
+    config.includeToc   ? tocHtml(songs)   : '',
+    config.includeIndex ? indexHtml(songs) : '',
+  ].join('');
+
+  return <!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page {
+    size: ${config.format || 'A4'};
+    margin: ${margin};
+  }
+   { box-sizing: border-box; }
+  body {
+    font-family: Georgia, serif;
+    font-size: ${perfSize};
+    line-height: ${perfLH};
+    color: #111;
+    columns: ${columns};
+    column-gap: 12mm;
+  }
+  .page-break {
+    break-before: page;
+    break-inside: avoid;
+    column-span: all;
+  }
+  .song-block {
+    break-inside: avoid;
+    margin-bottom: 8mm;
+  }
+  .song-header {
+    break-after: avoid;
+    margin-bottom: 3mm;
+  }
+  .song-title {
+    font-size: 1.3em;
+    font-weight: bold;
+    margin: 0 0 1mm 0;
+  }
+  .song-meta {
+    font-size: 0.85em;
+    color: #555;
+    margin: 0 0 2mm 0;
+  }
+  .lyrics { break-inside: avoid-page; }
+  .verse {
+    margin: 0 0 3mm 0;
+    break-inside: avoid;
+  }
+  .missing { color: #999; font-style: italic; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+  th, td { border-bottom: 1px solid #ccc; padding: 2mm 3mm; text-align: left; }
+  th { background: #f5f5f5; }
+  .toc h2, .index h2 { margin-bottom: 4mm; }
+</style>
+</head>
+<body>
+${frontMatter}
+${songsHtml}
+</body>
+</html>;
+}
+
+export async function generatePdf(songs, config = {}) {
+  const html = buildHtml(songs, config);
+
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+
+    const pdf = await page.pdf({
+      format:           config.format || 'A4',
+      printBackground:  true,
+      displayHeaderFooter: !config.cleanMode,
+      headerTemplate:  '<span></span>',
+      footerTemplate: 
+        <div style="font-size:9px;width:100%;text-align:center;color:#999;margin:0 18mm;">
+          <span class="pageNumber"></span> / <span class="totalPages"></span>
+        </div>,
+      margin: { top: '10mm', bottom: '14mm' },
+    });
+
+    return pdf;
+  } finally {
+    await browser.close();
+  }
+}
+`
+
+backend/src/routes/songs.js
+
+`js
+import { Router }                from 'express';
+import { body, query, validationResult } from 'express-validator';
+import {
+  getSongs, getSongById, createSong, updateSong, deleteSong,
+  saveLyrics, autoFetchLyrics, setTags, bulkUpdate,
+  findDuplicates, mergeSongs,
+} from '../services/songService.js';
+
+const router = Router();
+
+const validate = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+  next();
+};
+
+// GET /songs
+router.get('/', (req, res) => {
+  const { search, artist, album, year, status, tags, printready, sort, page, limit } = req.query;
+  const songs = getSongs({
+    search,
+    artist,
+    album,
+    year:       year       ? parseInt(year)  : undefined,
+    status,
+    tags:       tags       ? tags.split(',') : undefined,
+    printReady: printready !== undefined ? printready === 'true' : undefined,
+    sort,
+    page:       page  ? parseInt(page)  : 1,
+    limit:      limit ? parseInt(limit) : 50,
+  });
+  res.json(songs);
+});
+
+// GET /songs/duplicates
+router.get('/duplicates', (req, res) => {
+  res.json(findDuplicates());
+});
+
+// GET /songs/:id
+router.get('/:id', (req, res) => {
+  const song = getSongById(req.params.id);
+  if (!song) return res.status(404).json({ error: 'Not found' });
+  res.json(song);
+});
+
+// POST /songs
+router.post('/',
+  body('title').isString().notEmpty().trim(),
+  body('artist').isString().notEmpty().trim(),
+  validate,
+  (req, res) => {
+    try {
+      const song = createSong(req.body);
+      res.status(201).json(song);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// PATCH /songs/:id
+router.patch('/:id', (req, res) => {
+  const song = updateSong(req.params.id, req.body);
+  if (!song) return res.status(404).json({ error: 'Not found' });
+  res.json(song);
+});
+
+// DELETE /songs/:id
+router.delete('/:id', (req, res) => {
+  deleteSong(req.params.id);
+  res.status(204).end();
+});
+
+// PUT /songs/:id/lyrics
+router.put('/:id/lyrics',
+  body('text').isString().notEmpty(),
+  validate,
+  (req, res) => {
+    const { text, source, confidencescore, isverified } = req.body;
+    const song = saveLyrics(req.params.id, {
+      text,
+      source:          source || 'manual',
+      confidenceScore: confidencescore || 1,
+      isVerified:      isverified || 0,
+    });
+    res.json(song);
+  }
+);
+
+// POST /songs/:id/fetch-lyrics
+router.post('/:id/fetch-lyrics', async (req, res) => {
+  try {
+    const result = await autoFetchLyrics(req.params.id);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /songs/:id/tags
+router.put('/:id/tags', (req, res) => {
+  setTags(req.params.id, req.body.tags || []);
+  res.json(getSongById(req.params.id));
+});
+
+// POST /songs/bulk
+router.post('/bulk', (req, res) => {
+  const { ids, data } = req.body;
+  if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids must be array' });
+  bulkUpdate(ids, data);
+  res.json({ updated: ids.length });
+});
+
+// POST /songs/merge
+router.post('/merge', (req, res) => {
+  const { keepId, mergeIds, useMetadataFrom, useLyricsFrom } = req.body;
+  const result = mergeSongs(keepId, mergeIds, { useMetadataFrom, useLyricsFrom });
+  res.json(result);
+});
+
+export default router;
+`
+
+backend/src/routes/spotify.js
+
+`js
+import { Router } from 'express';
+import { SpotifyProvider }     from '../providers/spotify.js';
+import { importSpotifyTracks } from '../services/importService.js';
+
+const router = Router();
+
+function getProvider(req) {
+  const clientId     = process.env.SPOTIFYCLIENTID;
+  const clientSecret = process.env.SPOTIFYCLIENTSECRET;
+  if (!clientId || !clientSecret) throw new Error('Spotify credentials not configured');
+  return new SpotifyProvider({ clientId, clientSecret });
+}
+
+// POST /spotify/import/playlist
+router.post('/import/playlist', async (req, res) => {
+  try {
+    const { playlistId } = req.body;
+    if (!playlistId) return res.status(400).json({ error: 'playlistId required' });
+
+    const provider = getProvider(req);
+    const tracks   = await provider.getPlaylistTracks(playlistId);
+    const result   = importSpotifyTracks(tracks);
+
+    res.json({ tracksfound: tracks.length, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /spotify/import/album
+router.post('/import/album', async (req, res) => {
+  try {
+    const { albumId } = req.body;
+    if (!albumId) return res.status(400).json({ error: 'albumId required' });
+
+    const provider = getProvider(req);
+    const tracks   = await provider.getAlbumTracks(albumId);
+    const result   = importSpotifyTracks(tracks);
+
+    res.json({ tracksfound: tracks.length, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+export default router;
+`
+
+backend/src/routes/print.js
+
+`js
+import { Router }     from 'express';
+import { getSongById, getSongs } from '../services/songService.js';
+import { getCollection }         from '../services/collectionsService.js';
+import { generatePdf }           from '../print/engine.js';
+
+const router = Router();
+
+function parseSongIds(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return null;
+  return ids.map(id => getSongById(id)).filter(Boolean);
+}
+
+// POST /print/pdf
+// Body: { songIds?, collectionId?, filters?, config }
+router.post('/pdf', async (req, res) => {
+  try {
+    const { songIds, collectionId, config = {} } = req.body;
+
+    let songs = [];
+
+    if (collectionId) {
+      const col = getCollection(collectionId);
+      songs = col?.songs?.map(s => getSongById(s.id)).filter(Boolean) || [];
+    } else if (songIds?.length) {
+      songs = parseSongIds(songIds) || [];
+    } else {
+      // print all print-ready songs
+      songs = getSongs({ printReady: true, limit: 500 });
+    }
+
+    if (songs.length === 0)
+      return res.status(400).json({ error: 'No songs to print' });
+
+    const pdf = await generatePdf(songs, config);
+
+    res.set({
+      'Content-Type':        'application/pdf',
+      'Content-Disposition': attachment; filename="songbook.pdf",
+      'Content-Length':      pdf.length,
+    });
+    res.end(pdf);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+export default router;
+`
+
+backend/src/routes/import.js
+
+`js
+import { Router }   from 'express';
+import multer       from 'multer';
+import { parse }    from 'csv-parse/sync';
+import { importFromJSON } from '../services/importService.js';
+import { createSong, saveLyrics } from '../services/songService.js';
+import { sanitizeText } from '../utils/sanitize.js';
+
+const router  = Router();
+const upload  = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5  1024  1024 } });
+
+// POST /import/json
+router.post('/json', (req, res) => {
+  const records = req.body;
+  if (!Array.isArray(records)) return res.status(400).json({ error: 'Expected JSON array' });
+  const result = importFromJSON(records);
+  res.json(result);
+});
+
+// POST /import/csv
+router.post('/csv', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const records = parse(req.file.buffer.toString('utf8'), {
+      columns: true, skipemptylines: true, trim: true,
+    });
+
+    const result = importFromJSON(records.map(r => ({
+      title:       sanitizeText(r.title || r.Title || ''),
+      artist:      sanitizeText(r.artist || r.Artist || ''),
+      album:       sanitizeText(r.album  || r.Album  || ''),
+      year:        parseInt(r.year || r.Year) || null,
+      language:    sanitizeText(r.language || ''),
+    })));
+
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+export default router;
+`
+
+backend/src/routes/collections.js
+
+`js
+import { Router } from 'express';
+import {
+  getCollections, getCollection, createCollection,
+  addSongToCollection, removeSongFromCollection,
+} from '../services/collectionsService.js';
+
+const router = Router();
+
+router.get('/',     (req, res)  => res.json(getCollections()));
+router.get('/:id',  (req, res)  => {
+  const col = getCollection(req.params.id);
+  if (!col) return res.status(404).json({ error: 'Not found' });
+  res.json(col);
+});
+
+router.post('/', (req, res) => {
+  const { name, description } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  res.status(201).json(createCollection(name, description));
+});
+
+router.post('/:id/songs', (req, res) => {
+  addSongToCollection(req.params.id, req.body.songId);
+  res.json({ ok: true });
+});
+
+router.delete('/:id/songs/:songId', (req, res) => {
+  removeSongFromCollection(req.params.id, req.params.songId);
+  res.status(204).end();
+});
+
+export default router;
+`
+
+backend/src/index.js
+
+`js
+import 'dotenv/config';
+import express        from 'express';
+import cors           from 'cors';
+import songsRouter      from './routes/songs.js';
+import spotifyRouter    from './routes/spotify.js';
+import printRouter      from './routes/print.js';
+import importRouter     from './routes/import.js';
+import collectionsRouter from './routes/collections.js';
+
+// Run migrations on startup
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import db from './db/index.js';
+
+const dirname = dirname(fileURLToPath(import.meta.url));
+const schema    = readFileSync(join(dirname, 'db/schema.sql'), 'utf8');
+db.exec(schema);
+
+const app  = express();
+const PORT = process.env.PORT || 3001;
+
+app.use(cors({ origin: process.env.FRONTENDURL || 'http://localhost:5173' }));
+app.use(express.json({ limit: '2mb' }));
+
+app.use('/api/songs',       songsRouter);
+app.use('/api/spotify',     spotifyRouter);
+app.use('/api/print',       printRouter);
+app.use('/api/import',      importRouter);
+app.use('/api/collections', collectionsRouter);
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+app.listen(PORT, () => console.log(✓ Songbook API running on http://localhost:${PORT}));
+`
+
+Part 2 — Frontend (React + Vite)
+frontend/package.json
+
+`json
+{
+  "name": "songbook-frontend",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.22.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.1.4"
+  }
+}
+`
+
+frontend/src/api/client.js
+
+`js
+const BASE = import.meta.env.VITEAPIURL || 'http://localhost:3001/api';
+
+async function request(path, options = {}) {
+  const res = await fetch(${BASE}${path}, {
+    headers: { 'Content-Type': 'application/json', ...options.headers },
+    ...options,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || HTTP ${res.status});
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+export const api = {
+  // Songs
+  getSongs:      (params = {}) => request('/songs?' + new URLSearchParams(
+    Object.fromEntries(Object.entries(params).filter(([,v]) => v !== undefined && v !== ''))
+  )),
+  getSong:       (id)          => request(/songs/${id}),
+  createSong:    (data)        => request('/songs',    { method: 'POST', body: JSON.stringify(data) }),
+  updateSong:    (id, data)    => request(/songs/${id}, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteSong:    (id)          => request(/songs/${id}, { method: 'DELETE' }),
+  saveLyrics:    (id, data)    => request(/songs/${id}/lyrics, { method: 'PUT', body: JSON.stringify(data) }),
+  fetchLyrics:   (id)          => request(/songs/${id}/fetch-lyrics, { method: 'POST' }),
+  setTags:       (id, tags)    => request(/songs/${id}/tags, { method: 'PUT', body: JSON.stringify({ tags }) }),
+  bulkUpdate:    (ids, data)   => request('/songs/bulk', { method: 'POST', body: JSON.stringify({ ids, data }) }),
+  getDuplicates: ()            => request('/songs/duplicates'),
+  mergeSongs:    (data)        => request('/songs/merge', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Spotify
+  importPlaylist: (playlistId) => request('/spotify/import/playlist', { method: 'POST', body: JSON.stringify({ playlistId }) }),
+  importAlbum:    (albumId)    => request('/spotify/import/album',    { method: 'POST', body: JSON.stringify({ albumId }) }),
+
+  // Collections
+  getCollections:    ()             => request('/collections'),
+  getCollection:     (id)           => request(/collections/${id}),
+  createCollection:  (name, desc)   => request('/collections', { method: 'POST', body: JSON.stringify({ name, description: desc }) }),
+  addToCollection:   (colId, songId) => request(/collections/${colId}/songs, { method: 'POST', body: JSON.stringify({ songId }) }),
+  removeFromCollection: (colId, songId) => request(/collections/${colId}/songs/${songId}, { method: 'DELETE' }),
+
+  // Print
+  printPdf: async (body) => {
+    const res = await fetch(${BASE}/print/pdf, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error('PDF generation failed');
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = 'songbook.pdf'; a.click();
+    URL.revokeObjectURL(url);
+  },
+};
+`
+
+frontend/src/components/FilterBar.jsx
+
+`jsx
+import { useState } from 'react';
+
+const STATUSOPTIONS = [
+  { value: '', label: 'All Statuses' },
+  { value: 'missing',  label: 'Missing Lyrics' },
+  { value: 'auto',     label: 'Auto Fetched' },
+  { value: 'manual',   label: 'Manual' },
+  { value: 'reviewed', label: 'Reviewed' },
+];
+
+export default function FilterBar({ filters, onChange }) {
+  const set = (key, val) => onChange({ ...filters, [key]: val });
+
+  return (
+    <div style={styles.bar}>
+      <input
+        style={styles.search}
+        placeholder="Search title or artist…"
+        value={filters.search || ''}
+        onChange={e => set('search', e.target.value)}
+      />
+      <select value={filters.status || ''} onChange={e => set('status', e.target.value)} style={styles.select}>
+        {STATUSOPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      <input
+        style={styles.input}
+        placeholder="Artist"
+        value={filters.artist || ''}
+        onChange={e => set('artist', e.target.value)}
+      />
+      <input
+        style={styles.input}
+        placeholder="Year"
+        value={filters.year || ''}
+        type="number"
+        onChange={e => set('year', e.target.value)}
+      />
+      <label style={styles.check}>
+        <input
+          type="checkbox"
+          checked={filters.printready === 'true'}
+          onChange={e => set('printready', e.target.checked ? 'true' : '')}
+        />
+        {' '}Print ready
+      </label>
+      <select value={filters.sort || 'title'} onChange={e => set('sort', e.target.value)} style={styles.select}>
+        <option value="title">Sort: Title A–Z</option>
+        <option value="artist">Sort: Artist A–Z</option>
+        <option value="year">Sort: Year</option>
+      </select>
+    </div>
+  );
+}
+
+const styles = {
+  bar:    { display: 'flex', flexWrap: 'wrap', gap: 8, padding: '10px 0' },
+  search: { flex: 2, minWidth: 180, padding: '6px 10px', border: '1px solid #ccc', borderRadius: 4 },
+  input:  { flex: 1, minWidth: 100, padding: '6px 10px', border: '1px solid #ccc', borderRadius: 4 },
+  select: { padding: '6px 8px', border: '1px solid #ccc', borderRadius: 4 },
+  check:  { display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 },
+};
+`
+
+frontend/src/components/SongTable.jsx
+
+`jsx
+const STATUSCOLORS = {
+  missing:  '#e74c3c',
+  auto:     '#f39c12',
+  manual:   '#3498db',
+  reviewed: '#27ae60',
+};
+
+export default function SongTable({ songs, selected, onSelect, onOpen }) {
+  const toggleAll = () => {
+    if (selected.size === songs.length) onSelect(new Set());
+    else onSelect(new Set(songs.map(s => s.id)));
+  };
+
+  return (
+    <table style={styles.table}>
+      <thead>
+        <tr>
+          <th style={styles.th}>
+            <input type="checkbox" checked={selected.size === songs.length && songs.length > 0}
+              onChange={toggleAll} />
+          </th>
+          <th style={styles.th}>Title</th>
+          <th style={styles.th}>Artist</th>
+          <th style={styles.th}>Album</th>
+          <th style={styles.th}>Year</th>
+          <th style={styles.th}>Status</th>
+          <th style={styles.th}>Print</th>
+        </tr>
+      </thead>
+      <tbody>
+        {songs.map(song => (
+          <tr key={song.id} style={styles.row} onClick={() => onOpen(song.id)}>
+            <td style={styles.td} onClick={e => e.stopPropagation()}>
+              <input type="checkbox" checked={selected.has(song.id)}
+                onChange={() => {
+                  const next = new Set(selected);
+                  next.has(song.id) ? next.delete(song.id) : next.add(song.id);
+                  onSelect(next);
+                }} />
+            </td>
+            <td style={styles.td}><strong>{song.title}</strong></td>
+            <td style={styles.td}>{song.artistname}</td>
+            <td style={styles.td}>{song.albumtitle || '—'}</td>
+            <td style={styles.td}>{song.year || '—'}</td>
+            <td style={styles.td}>
+              <span style={{ ...styles.badge, background: STATUSCOLORS[song.lyricsstatus] || '#999' }}>
+                {song.lyricsstatus}
+              </span>
+            </td>
+            <td style={styles.td}>{song.isprintready ? '✓' : ''}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+const styles = {
+  table: { width: '100%', borderCollapse: 'collapse', fontSize: 14 },
+  th:    { textAlign: 'left', padding: '8px 10px', borderBottom: '2px solid #ddd', background: '#f9f9f9' },
+  td:    { padding: '7px 10px', borderBottom: '1px solid #eee', cursor: 'pointer' },
+  row:   { transition: 'background .1s' },
+  badge: { padding: '2px 7px', borderRadius: 10, color: '#fff', fontSize: 11, fontWeight: 600 },
+};
+`
+
+frontend/src/pages/Library.jsx
+
+`jsx
+import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api }         from '../api/client.js';
+import FilterBar       from '../components/FilterBar.jsx';
+import SongTable       from '../components/SongTable.jsx';
+
+export default function Library() {
+  const [songs,    setSongs]    = useState([]);
+  const [filters,  setFilters]  = useState({});
+  const [selected, setSelected] = useState(new Set());
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState(null);
+  const navigate = useNavigate();
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      setSongs(await api.getSongs(filters));
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, [filters]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const bulkPrintReady = async (val) => {
+    if (!selected.size) return;
+    await api.bulkUpdate([...selected], { isprintready: val ? 1 : 0 });
+    setSelected(new Set()); load();
+  };
+
+  const bulkFetchLyrics = async () => {
+    for (const id of selected) {
+      try { await api.fetchLyrics(id); } catch {}
+    }
+    setSelected(new Set()); load();
+  };
+
+  const printSelected = () => {
+    api.printPdf({
+      songIds: selected.size ? [...selected] : undefined,
+      config: { format: 'A4', fontSize: 'medium', breakMode: 'one-per-page', includeToc: true },
+    });
+  };
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.header}>
+        <h1 style={styles.title}>Song Library</h1>
+        <div style={styles.actions}>
+          <button style={styles.btn} onClick={() => navigate('/songs/new')}>+ Add Song</button>
+          <button style={styles.btn} onClick={() => navigate('/import')}>Import</button>
+          <button style={{ ...styles.btn, background: '#27ae60' }} onClick={printSelected}>
+            Print {selected.size ? (${selected.size}) : 'All Ready'}
+          </button>
+        </div>
+      </div>
+
+      <FilterBar filters={filters} onChange={f => { setFilters(f); setSelected(new Set()); }} />
+
+      {selected.size > 0 && (
+        <div style={styles.bulk}>
+          <strong>{selected.size} selected —</strong>
+          <button style={styles.smBtn} onClick={() => bulkPrintReady(true)}>Mark Print Ready</button>
+          <button style={styles.smBtn} onClick={() => bulkPrintReady(false)}>Unmark Print Ready</button>
+          <button style={styles.smBtn} onClick={bulkFetchLyrics}>Fetch Lyrics</button>
+          <button style={{ ...styles.smBtn, color: '#c0392b' }}
+            onClick={async () => {
+              if (!confirm(Delete ${selected.size} songs?)) return;
+              for (const id of selected) await api.deleteSong(id);
+              setSelected(new Set()); load();
+            }}>Delete</button>
+        </div>
+      )}
+
+      {error   && <p style={{ color: 'red' }}>{error}</p>}
+      {loading && <p style={{ color: '#888' }}>Loading…</p>}
+
+      {!loading && songs.length === 0 && (
+        <p style={{ color: '#888', marginTop: 40, textAlign: 'center' }}>
+          No songs found. Import a playlist or add a song manually.
+        </p>
+      )}
+
+      <SongTable songs={songs} selected={selected} onSelect={setSelected}
+        onOpen={id => navigate(/songs/${id})} />
+    </div>
+  );
+}
+
+const styles = {
+  page:    { maxWidth: 1100, margin: '0 auto', padding: '24px 16px' },
+  header:  { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  title:   { margin: 0, fontSize: 28 },
+  actions: { display: 'flex', gap: 8 },
+  btn:     { padding: '8px 16px', background: '#3498db', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 },
+  bulk:    { display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px', background: '#eaf3fb', borderRadius: 6, marginBottom: 8, flexWrap: 'wrap' },
+  smBtn:   { padding: '4px 10px', background: '#fff', border: '1px solid #ccc', borderRadius: 4, cursor: 'pointer', fontSize: 13 },
+};
+`
+
+frontend/src/pages/SongPage.jsx
+
+`jsx
+import { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { api } from '../api/client.js';
+
+const STATUSLABELS = { missing: '❌ Missing', auto: '🤖 Auto', manual: '✏️ Manual', reviewed: '✅ Reviewed' };
+
+export default function SongPage() {
+  const { id }   = useParams();
+  const navigate = useNavigate();
+  const isNew    = id === 'new';
+
+  const [song,   setSong]   = useState(null);
+  const [form,   setForm]   = useState({ title: '', artist: '', album: '', year: '', language: '' });
+  const [lyrics, setLyrics] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [msg,    setMsg]    = useState('');
+
+  useEffect(() => {
+    if (isNew) return;
+    api.getSong(id).then(s => {
+      setSong(s);
+      setForm({ title: s.title, artist: s.artistname, album: s.albumtitle || '', year: s.year || '', language: s.language || '' });
+      setLyrics(s.lyrics?.text || '');
+    });
+  }, [id, isNew]);
+
+  const save = async () => {
+    setSaving(true); setMsg('');
+    try {
+      if (isNew) {
+        const created = await api.createSong(form);
+        if (lyrics) await api.saveLyrics(created.id, { text: lyrics });
+        navigate(/songs/${created.id});
+      } else {
+        await api.updateSong(id, form);
+        if (lyrics !== (song?.lyrics?.text || ''))
+          await api.saveLyrics(id, { text: lyrics });
+        const updated = await api.getSong(id);
+        setSong(updated);
+        setMsg('Saved.');
+      }
+    } catch (e) { setMsg(Error: ${e.message}); }
+    finally { setSaving(false); }
+  };
+
+  const fetchLyrics = async () => {
+    setSaving(true); setMsg('Fetching…');
+    try {
+      const result = await api.fetchLyrics(id);
+      if (result.fetched) {
+        setLyrics(result.song.lyrics?.text || '');
+        setSong(result.song);
+        setMsg('Lyrics fetched.');
+      } else {
+        setMsg('No lyrics found by any provider.');
+      }
+    } catch (e) { setMsg(Error: ${e.message}); }
+    finally { setSaving(false); }
+  };
+
+  const togglePrintReady = async () => {
+    const updated = await api.updateSong(id, { isprintready: song.isprintready ? 0 : 1 });
+    setSong(updated);
+  };
+
+  const markVerified = async () => {
+    await api.saveLyrics(id, { text: lyrics, isverified: 1 });
+    const updated = await api.getSong(id);
+    setSong(updated); setMsg('Marked as reviewed.');
+  };
+
+  return (
+    <div style={styles.page}>
+      <button style={styles.back} onClick={() => navigate('/')}>← Library</button>
+
+      <h2 style={{ marginBottom: 4 }}>{isNew ? 'New Song' : (song?.title || '…')}</h2>
+
+      {!isNew && song && (
+        <div style={styles.meta}>
+          <span>Status: <strong>{STATUSLABELS[song.lyricsstatus]}</strong></span>
+          <span>Print ready: <strong>{song.isprintready ? 'Yes' : 'No'}</strong></span>
+        </div>
+      )}
+
+      <div style={styles.grid}>
+        {[
+          ['Title',    'title',    'text'],
+          ['Artist',   'artist',   'text'],
+          ['Album',    'album',    'text'],
+          ['Year',     'year',     'number'],
+          ['Language', 'language', 'text'],
+        ].map(([label, key, type]) => (
+          <label key={key} style={styles.label}>
+            {label}
+            <input style={styles.input} type={type} value={form[key] || ''}
+              onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} />
+          </label>
+        ))}
+      </div>
+
+      <label style={{ ...styles.label, display: 'block', marginTop: 16 }}>
+        Lyrics
+        <textarea style={styles.textarea} value={lyrics}
+          onChange={e => setLyrics(e.target.value)}
+          placeholder="Paste or type lyrics here…" />
+      </label>
+
+      <div style={styles.btnRow}>
+        <button style={styles.primary} onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        {!isNew && (
+          <>
+            <button style={styles.secondary} onClick={fetchLyrics} disabled={saving}>
+              Auto-fetch Lyrics
+            </button>
+            <button style={styles.secondary} onClick={markVerified}>
+              Mark Reviewed
+            </button>
+            <button style={styles.secondary} onClick={togglePrintReady}>
+              {song?.isprintready ? 'Unmark Print Ready' : 'Mark Print Ready'}
+            </button>
+            <button style={{ ...styles.secondary, background: '#27ae60', color: '#fff' }}
+              onClick={() => api.printPdf({ songIds: [id], config: { format: 'A4', fontSize: 'medium', breakMode: 'one-per-page' } })}>
+              Print This Song
+            </button>
+          </>
+        )}
+      </div>
+
+      {msg && <p style={{ color: msg.startsWith('Error') ? 'red' : '#27ae60', marginTop: 8 }}>{msg}</p>}
+    </div>
+  );
+}
+
+const styles = {
+  page:     { maxWidth: 800, margin: '0 auto', padding: '24px 16px' },
+  back:     { background: 'none', border: 'none', color: '#3498db', cursor: 'pointer', padding: 0, marginBottom: 12, fontSize: 14 },
+  meta:     { display: 'flex', gap: 24, color: '#555', fontSize: 13, marginBottom: 16 },
+  grid:     { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 },
+  label:    { fontSize: 13, fontWeight: 600, color: '#333' },
+  input:    { display: 'block', width: '100%', padding: '7px 10px', border: '1px solid #ccc', borderRadius: 4, marginTop: 3, fontFamily: 'inherit' },
+  textarea: { display: 'block', width: '100%', height: 300, padding: '10px', border: '1px solid #ccc', borderRadius: 4, marginTop: 3, fontFamily: 'monospace', fontSize: 13, resize: 'vertical', lineHeight: 1.6 },
+  btnRow:   { display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' },
+  primary:  { padding: '8px 20px', background: '#3498db', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 },
+  secondary:{ padding: '8px 14px', background: '#f0f0f0', color: '#333', border: '1px solid #ccc', borderRadius: 4, cursor: 'pointer' },
+};
+`
+
+frontend/src/pages/ImportPage.jsx
+
+`jsx
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../api/client.js';
+
+export default function ImportPage() {
+  const [playlistId, setPlaylistId] = useState('');
+  const [albumId,    setAlbumId]    = useState('');
+  const [result,     setResult]     = useState(null);
+  const [loading,    setLoading]    = useState(false);
+  const [error,      setError]      = useState('');
+  const navigate = useNavigate();
+
+  const run = async (action) => {
+    setLoading(true); setResult(null); setError('');
+    try {
+      setResult(await action());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  // Extract ID from full Spotify URL or raw ID
+  const extractId = (input) => {
+    const m = input.match(/(?:playlist|album)\/([A-Za-z0-9]+)/);
+    return m ? m[1] : input.trim();
+  };
+
+  return (
+    <div style={styles.page}>
+      <button style={styles.back} onClick={() => navigate('/')}>← Library</button>
+      <h2>Import</h2>
+
+      <section style={styles.section}>
+        <h3>Spotify Playlist</h3>
+        <div style={styles.row}>
+          <input style={styles.input} placeholder="Playlist URL or ID"
+            value={playlistId} onChange={e => setPlaylistId(e.target.value)} />
+          <button style={styles.btn} disabled={loading || !playlistId}
+            onClick={() => run(() => api.importPlaylist(extractId(playlistId)))}>
+            Import Playlist
+          </button>
+        </div>
+      </section>
+
+      <section style={styles.section}>
+        <h3>Spotify Album</h3>
+        <div style={styles.row}>
+          <input style={styles.input} placeholder="Album URL or ID"
+            value={albumId} onChange={e => setAlbumId(e.target.value)} />
+          <button style={styles.btn} disabled={loading || !albumId}
+            onClick={() => run(() => api.importAlbum(extractId(albumId)))}>
+            Import Album
+          </button>
+        </div>
+      </section>
+
+      <section style={styles.section}>
+        <h3>CSV Upload</h3>
+        <p style={styles.hint}>Columns: <code>title, artist, album, year, language</code></p>
+        <input type="file" accept=".csv"
+          onChange={async e => {
+            const file = e.target.files[0]; if (!file) return;
+            const form = new FormData(); form.append('file', file);
+            setLoading(true); setError(''); setResult(null);
+            try {
+              const res = await fetch(${import.meta.env.VITEAPIURL || 'http://localhost:3001/api'}/import/csv, {
+                method: 'POST', body: form,
+              });
+              setResult(await res.json());
+            } catch (e) { setError(e.message); }
+            finally { setLoading(false); e.target.value = ''; }
+          }}
+        />
+      </section>
+
+      {loading && <p style={{ color: '#888' }}>Importing…</p>}
+      {error   && <p style={{ color: 'red' }}>{error}</p>}
+      {result  && (
+        <div style={styles.result}>
+          <strong>Done.</strong> Imported: {result.imported} · Skipped: {result.skipped}
+          {result.errors?.length > 0 && (
+            <ul style={{ color: 'red', marginTop: 8 }}>
+              {result.errors.map((e, i) => <li key={i}>{e.track || e.record}: {e.error}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const styles = {
+  page:    { maxWidth: 700, margin: '0 auto', padding: '24px 16px' },
+  back:    { background: 'none', border: 'none', color: '#3498db', cursor: 'pointer', padding: 0, marginBottom: 12, fontSize: 14 },
+  section: { background: '#f9f9f9', border: '1px solid #e0e0e0', borderRadius: 8, padding: 20, marginBottom: 20 },
+  row:     { display: 'flex', gap: 8 },
+  input:   { flex: 1, padding: '8px 12px', border: '1px solid #ccc', borderRadius: 4 },
+  btn:     { padding: '8px 18px', background: '#3498db', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 },
+  hint:    { color: '#777', fontSize: 13, marginTop: 0 },
+  result:  { padding: '12px 16px', background: '#eafaf1', border: '1px solid #a9dfbf', borderRadius: 6 },
+};
+`
+
+frontend/src/main.jsx
+
+`jsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import Library    from './pages/Library.jsx';
+import SongPage   from './pages/SongPage.jsx';
+import ImportPage from './pages/ImportPage.jsx';
+
+function App() {
+  return (
+    <BrowserRouter>
+      <nav style={navStyle}>
+        <Link to="/" style={navLink}>📚 Songbook</Link>
+        <Link to="/import" style={{ ...navLink, fontSize: 14, opacity: 0.8 }}>Import</Link>
+        <Link to="/songs/new" style={{ ...navLink, fontSize: 14, opacity: 0.8 }}>+ Add Song</Link>
+      </nav>
+      <Routes>
+        <Route path="/"          element={<Library />} />
+        <Route path="/songs/:id" element={<SongPage />} />
+        <Route path="/import"    element={<ImportPage />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+const navStyle = { display: 'flex', gap: 24, alignItems: 'center', padding: '12px 24px', background: '#2c3e50', position: 'sticky', top: 0, zIndex: 100 };
+const navLink  = { color: '#fff', textDecoration: 'none', fontWeight: 700, fontSize: 18 };
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+`
+
+frontend/index.html
+
+`html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Songbook</title>
+    <style>
+      , ::before, *::after { box-sizing: border-box; }
+      body { margin: 0; font-family: system-ui, sans-serif; background: #fff; color: #222; }
+      a { color: inherit; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+`
+
+Part 3 — Root Config & Setup
+.env (backend)
+
+`env
+PORT=3001
+FRONTENDURL=http://localhost:5173
+
+SPOTIFYCLIENTID=yourclientidhere
+SPOTIFYCLIENTSECRET=yourclientsecrethere
+`
+
+frontend/.env
+
+`env
+VITEAPIURL=http://localhost:3001/api
+`
+
+Root package.json (workspace runner)
+
+`json
+{
+  "name": "songbook",
+  "private": true,
+  "scripts": {
+    "setup":    "cd backend && npm install && cd ../frontend && npm install",
+    "migrate":  "cd backend && node src/db/migrate.js",
+    "backend":  "cd backend && npm run dev",
+    "frontend": "cd frontend && npm run dev",
+    "dev":      "npm run backend & npm run frontend"
+  }
+}
+`
+
+Getting Started
+
+`bash
+Install dependencies
+npm run setup
+
+Create .env files (fill in Spotify credentials)
+cp backend/.env.example backend/.env
+
+Initialize database
+npm run migrate
+
+Start both servers
+npm run dev
+`
+
+Then open http://localhost:5173.
+
+Architecture Summary
+
+`mermaid
+flowchart TD
+    UI[React Frontend :5173]
+    API[Express API :3001]
+    DB[(SQLite)]
+    SP[Spotify API]
+    LP1[lrclib.net]
+    LP2[lyrics.ovh]
+    PDF[Puppeteer PDF]
+
+    UI -->|REST JSON| API
+    API --> DB
+    API -->|OAuth2 Client Credentials| SP
+    API --> LP1
+    API --> LP2
+    API --> PDF
+    PDF -->|binary stream| UI
+`
+
+Key Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| SQLite + better-sqlite3 | Synchronous, zero-config, fast for personal scale |
+| Provider pattern for lyrics | Swap or add sources without touching business logic |
+| Puppeteer for PDF | Full CSS layout control; handles pagination, columns, fonts correctly |
+| Confidence scoring | Auto-fetched lyrics below threshold stay in "needs review" rather than silently polluting data |
+| Normalize + fuzzy match | Handles "feat." variants, punctuation differences without a heavy NLP dep |
+| Sanitize at write time | XSS protection happens once at input, not at every render |
+
+The most interesting extension point here is the lyrics provider interface — adding a new source (say, Musixmatch via its official API) is just a new class that extends BaseLyricsProvider` and gets dropped into the providers array, with zero changes elsewhere.
