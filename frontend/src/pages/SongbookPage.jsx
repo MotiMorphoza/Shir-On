@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
-import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
 function isHebrewText(value = '') {
   return /[\u0590-\u05FF]/.test(String(value || ''));
@@ -145,12 +144,10 @@ export default function SongbookPage() {
         </div>
 
         <div style={styles.headerActions}>
-          <BackToLibraryButton />
           <button type="button" style={styles.primaryBtn} onClick={printSongbook}>
             Print Songbook
           </button>
           <label style={styles.filterField}>
-            <span style={styles.filterLabel}>Playlist</span>
             <select
               value={selectedPlaylistId}
               onChange={(e) => setSelectedPlaylistId(e.target.value)}

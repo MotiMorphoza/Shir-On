@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, BASE as API_BASE } from '../api/client.js';
-import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
 const LAST_IMPORT_JOB_KEY = 'shir-on:last-import-job';
 
@@ -287,8 +286,6 @@ export default function ImportPage() {
           <p style={styles.eyebrow}>Import</p>
           <h1 style={styles.title}>Bring Songs Into Shir-On</h1>
         </div>
-
-        <BackToLibraryButton />
       </header>
 
       <section style={styles.section}>
@@ -296,12 +293,25 @@ export default function ImportPage() {
           <div>
             <h2 style={styles.sectionTitle}>Spotify Connection</h2>
           </div>
-          {searchParams.get('spotify') === 'connected' && (
-            <span style={styles.badge}>Returned from Spotify</span>
-          )}
-          {searchParams.get('spotify') === 'error' && (
-            <span style={styles.errorBadge}>Spotify auth failed</span>
-          )}
+          <div style={styles.sectionHeaderActions}>
+            {searchParams.get('spotify') === 'connected' && (
+              <span style={styles.badge}>Returned from Spotify</span>
+            )}
+            {searchParams.get('spotify') === 'error' && (
+              <span style={styles.errorBadge}>Spotify auth failed</span>
+            )}
+            {!checkingSpotify && spotifyStatus?.configured && (
+              spotifyStatus?.authenticated ? (
+                <button type="button" style={styles.secondaryBtn} onClick={disconnectSpotify} disabled={loading}>
+                  Disconnect
+                </button>
+              ) : (
+                <button type="button" style={styles.primaryBtn} onClick={connectSpotify}>
+                  Connect Spotify
+                </button>
+              )
+            )}
+          </div>
         </div>
 
         {searchParams.get('spotify') === 'error' && spotifyError && (
@@ -325,21 +335,12 @@ export default function ImportPage() {
             )}
           </>
         ) : spotifyStatus?.authenticated ? (
-          <div style={styles.inlineRow}>
-            <p style={styles.success}>
-              Connected
-              {spotifyStatus?.account?.display_name ? ` as ${spotifyStatus.account.display_name}` : ''}.
-            </p>
-            <button type="button" style={styles.secondaryBtn} onClick={disconnectSpotify} disabled={loading}>
-              Disconnect
-            </button>
-          </div>
+          <p style={styles.success}>
+            Connected
+            {spotifyStatus?.account?.display_name ? ` as ${spotifyStatus.account.display_name}` : ''}.
+          </p>
         ) : (
-          <div style={styles.inlineRow}>
-            <button type="button" style={styles.primaryBtn} onClick={connectSpotify}>
-              Connect Spotify
-            </button>
-          </div>
+          <p style={styles.info}>Connect Spotify to enable playlist and album imports.</p>
         )}
       </section>
 
@@ -547,6 +548,13 @@ const styles = {
     alignItems: 'flex-start',
     flexWrap: 'wrap',
     marginBottom: 8,
+  },
+  sectionHeaderActions: {
+    display: 'flex',
+    gap: 10,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
   },
   sectionTitle: {
     margin: 0,

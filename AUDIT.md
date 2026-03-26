@@ -276,6 +276,29 @@ Why it mattered:
 
 Code:
 - [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+
+### 22. Navigation relied on repeated back buttons instead of the main app chrome
+
+Status: `Fixed`
+
+What changed:
+- added an explicit `Library` entry to the main top navigation
+- removed repeated back-to-library buttons from the individual page headers
+- aligned the Spotify connection action into the `Spotify Connection` section header row
+
+Why it mattered:
+- repeated back buttons created visual clutter and made the main navigation feel incomplete
+
+Code:
+- [frontend/src/main.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/main.jsx)
+- [frontend/src/pages/ImportPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ImportPage.jsx)
+- [frontend/src/pages/CollectionsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/CollectionsPage.jsx)
+- [frontend/src/pages/DuplicatesPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/DuplicatesPage.jsx)
+- [frontend/src/pages/JobsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/JobsPage.jsx)
+- [frontend/src/pages/LyricsRunPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/LyricsRunPage.jsx)
+- [frontend/src/pages/ReportsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ReportsPage.jsx)
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+- [frontend/src/pages/SongbookPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongbookPage.jsx)
 - [frontend/src/api/client.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/api/client.js)
 
 ### 17. Print-ready state created extra friction in the live UI
@@ -324,7 +347,7 @@ Status: `Fixed`
 What changed:
 - `Import` nav label was changed to `Import Playlist`
 - year fields now support typed input plus a scrollable year suggestion list
-- print opening now uses a pre-opened tab fallback instead of relying only on a late `window.open()`
+- print opening now submits directly into a dedicated preview tab instead of relying on a delayed fetch/blob handoff
 - the library selection bar no longer includes the extra collection chooser block
 
 Why it mattered:
@@ -349,6 +372,20 @@ Why it mattered:
 
 Code:
 - [frontend/src/pages/SongbookPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongbookPage.jsx)
+
+### 21. Song page header repeated low-value metadata
+
+Status: `Fixed`
+
+What changed:
+- removed the summary row under the song title that repeated lyrics presence, link state, Spotify source, and tags
+- the header now stays focused on title plus the artist / album / year subtitle
+
+Why it mattered:
+- the extra row made the song page feel busier without helping the main editing flow
+
+Code:
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
 
 ---
 

@@ -199,46 +199,42 @@ export const api = {
   getJob: (id) => request(`/jobs/${id}`),
 
   printPdf: async (body) => {
+    const targetName = `shir_on_print_${Date.now()}`;
     const previewWindow =
       typeof window !== 'undefined'
-        ? window.open('', '_blank', 'noopener,noreferrer')
+        ? window.open('', targetName)
         : null;
 
-    const res = await fetch(`${BASE}/print/pdf`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      if (previewWindow && !previewWindow.closed) {
-        previewWindow.close();
-      }
-      throw new Error(err.error || 'PDF generation failed');
+    if (!previewWindow) {
+      throw new Error('Popup blocked. Please allow a new tab for printing.');
     }
 
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
+    previewWindow.document.open();
+    previewWindow.document.write(
+      '<!doctype html><html><head><title>Preparing PDF...</title></head><body style="font-family: sans-serif; padding: 24px;">Preparing PDF...</body></html>'
+    );
+    previewWindow.document.close();
 
-    if (previewWindow && !previewWindow.closed) {
-      previewWindow.location.href = url;
-    } else {
-      const link = document.createElement('a');
-      link.href = url;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.click();
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `${BASE}/print/pdf`;
+    form.target = targetName;
+    form.style.display = 'none';
+
+    const payload = document.createElement('input');
+    payload.type = 'hidden';
+    payload.name = 'payload';
+    payload.value = JSON.stringify(body || {});
+    form.appendChild(payload);
+
+    document.body.appendChild(form);
+
+    try {
+      form.submit();
+      return { ok: true };
+    } finally {
+      document.body.removeChild(form);
     }
-
-    setTimeout(() => {
-      URL.revokeObjectURL(url);
-    }, 60000);
-
-    return { ok: true };
   },
 };
 

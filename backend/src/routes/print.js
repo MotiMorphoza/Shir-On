@@ -26,7 +26,11 @@ function sortSongsForBook(songs = []) {
 // Body: { songIds?, collectionId?, filters?, config }
 router.post('/pdf', async (req, res) => {
   try {
-    const { songIds, collectionId, config = {} } = req.body;
+    const payload =
+      typeof req.body?.payload === 'string'
+        ? JSON.parse(req.body.payload)
+        : req.body;
+    const { songIds, collectionId, config = {} } = payload || {};
 
     let songs = [];
 
@@ -48,7 +52,7 @@ router.post('/pdf', async (req, res) => {
 
     res.set({
       'Content-Type':        'application/pdf',
-      'Content-Disposition': `attachment; filename="songbook.pdf"`,
+      'Content-Disposition': `inline; filename="songbook.pdf"`,
       'Content-Length':      pdf.length,
     });
     res.end(pdf);

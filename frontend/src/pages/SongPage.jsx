@@ -1,14 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
-
-const STATUS_LABELS = {
-  missing: 'No Lyrics',
-  auto: 'Has Lyrics',
-  manual: 'Has Lyrics',
-  reviewed: 'Has Lyrics',
-};
 
 function isProbablyHebrew(text) {
   return /[\u0590-\u05FF]/.test(String(text || ''));
@@ -192,7 +184,6 @@ export default function SongPage() {
   if (loading) {
     return (
       <div style={styles.page}>
-        <BackToLibraryButton />
         <p style={styles.info}>Loading song...</p>
       </div>
     );
@@ -201,13 +192,11 @@ export default function SongPage() {
   if (!isNew && error && !song) {
     return (
       <div style={styles.page}>
-        <BackToLibraryButton />
         <p style={styles.error}>{error}</p>
       </div>
     );
   }
 
-  const statusLabel = STATUS_LABELS[song?.lyrics_status] || song?.lyrics_status || '-';
   const artistName = song?.artist_name || form.artist || '-';
   const albumName = song?.album_title || form.album || 'Single';
   const metaParts = [albumName, form.year || song?.year || ''].filter(Boolean);
@@ -231,27 +220,7 @@ export default function SongPage() {
           </p>
         </div>
 
-        <div style={styles.headerActions}>
-          <BackToLibraryButton />
-        </div>
       </header>
-
-      {!isNew && song && (
-        <div style={styles.summaryGrid}>
-          <div style={styles.summaryCard}>
-            <strong>{statusLabel}</strong>
-            <span>Lyrics status</span>
-          </div>
-          <div style={styles.summaryCard}>
-            <strong>{song.spotify_url ? 'Linked' : 'Not Linked'}</strong>
-            <span>Spotify source</span>
-          </div>
-          <div style={styles.summaryCard}>
-            <strong>{Array.isArray(song.tags) ? song.tags.length : 0}</strong>
-            <span>Tags</span>
-          </div>
-        </div>
-      )}
 
       {msg && <p style={styles.success}>{msg}</p>}
       {error && <p style={styles.error}>{error}</p>}
@@ -434,20 +403,6 @@ const styles = {
     gap: 10,
     flexWrap: 'wrap',
     justifyContent: 'flex-end',
-  },
-  summaryGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    gap: 12,
-    marginBottom: 18,
-  },
-  summaryCard: {
-    display: 'grid',
-    gap: 4,
-    padding: '16px 18px',
-    borderRadius: 18,
-    background: '#fffefb',
-    border: '1px solid rgba(114, 98, 78, 0.18)',
   },
   layout: {
     display: 'grid',

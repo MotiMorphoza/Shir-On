@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
-import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
 function conflictFields(group) {
   const fields = [
@@ -101,7 +100,6 @@ export default function DuplicatesPage() {
         </div>
 
         <div style={styles.headerActions}>
-          <BackToLibraryButton />
           <div style={styles.countCard}>
             <strong>{groups.length}</strong>
             <span>duplicate groups</span>

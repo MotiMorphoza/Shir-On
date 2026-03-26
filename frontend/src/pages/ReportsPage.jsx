@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
-import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
 function formatDuration(value) {
   const ms = Number(value || 0);
@@ -127,7 +126,6 @@ export default function ReportsPage() {
         </div>
 
         <div style={styles.headerActions}>
-          <BackToLibraryButton />
           <select value={type} onChange={(e) => setType(e.target.value)} style={styles.select}>
             <option value="">All Reports</option>
             <option value="import">Import Runs</option>

@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
 const LAST_LYRICS_JOB_KEY = 'shir-on:last-lyrics-job';
 
@@ -274,14 +273,13 @@ export default function LyricsRunPage() {
         </div>
 
         <div style={styles.headerActions}>
-          <BackToLibraryButton />
           <button
             type="button"
             style={styles.primaryBtn}
             onClick={runFetch}
             disabled={running || songs.length === 0}
           >
-            {running ? 'Fetching...' : 'Start Background Fetch'}
+            {running ? 'Fetching...' : 'Start Fetch'}
           </button>
           {activeJob?.id && (
             <Link to={`/jobs?job=${activeJob.id}`} style={styles.secondaryLink}>

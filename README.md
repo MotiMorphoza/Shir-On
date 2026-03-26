@@ -101,13 +101,16 @@ Useful commands:
 
 ## UI notes
 
-- every major page now exposes the same `Back to Library` button style
+- the top navigation now includes a dedicated `Library` entry, so pages no longer need separate back-to-library buttons
 - the top navigation stays visible while moving between pages
 - reading mode can be scoped to `All songs` or one imported playlist
 - the main navigation label is `Import Playlist`
+- the Spotify connection action now sits in the same header row as the `Spotify Connection` title
 - the `Fetch Lyrics` page can also be scoped to one playlist and reconnect to the tracked lyrics job after navigation without jumping to an unrelated run
 - the `Fetch Lyrics` screen now loads explicitly requested songs through one bulk API request instead of one request per song
 - the Song page year field now supports both typing and picking from a year list
+- the Song page header now stays compact and no longer repeats a status/tag summary row under the title
+- printing now submits directly into a new preview tab instead of waiting on a client-side blob handoff
 - the Reports screen includes a destructive `Reset Reports` action that clears both active and legacy JSON report files
 - the song editor and collections pages now use the same card, spacing, and action hierarchy patterns as the main library UI
 - the song editor now exposes comma-separated tag editing on top of the existing backend tag support
@@ -116,6 +119,7 @@ Useful commands:
 - print entry points are now exposed directly in the Library and Songbook screens
 - user-facing lyrics terminology now consistently says `Fetch` instead of `Run`
 - the Songbook screen now excludes songs without lyrics
+- the Songbook playlist selector now appears without an extra `Playlist` label above it
 
 ## Data written locally
 

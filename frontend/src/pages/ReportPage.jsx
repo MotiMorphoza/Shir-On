@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
 function formatDuration(value) {
   const ms = Number(value || 0);
@@ -228,7 +227,6 @@ export default function ReportPage() {
         </div>
 
         <div style={styles.actions}>
-          <BackToLibraryButton />
           <Link to="/reports" style={styles.secondaryLink}>
             All Reports
           </Link>

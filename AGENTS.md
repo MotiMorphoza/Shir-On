@@ -126,7 +126,7 @@ When a change affects behavior, risks, setup, UX, or architecture:
 - schema includes songs, lyrics, tags, collections, and print sets
 - provider inventory includes `zemereshet`, `shironet`, `nli`, `tab4u`, `google-sites`, `lrclib.net`, and `lyrics.ovh`
 - report files exist in volume in the local workspace
-- the UI now includes a shared `Back to Library` button pattern across major pages
+- the UI now includes a persistent top navigation entry for `Library` instead of repeating back-to-library buttons across pages
 - the digital songbook can be scoped to one playlist
 - reports can be cleared from the UI without deleting the SQLite library
 - the lyrics and Spotify import flows reconnect to the last tracked background job from the browser, but the backend job registry is still memory-backed

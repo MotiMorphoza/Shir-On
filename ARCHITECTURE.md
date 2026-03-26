@@ -37,7 +37,7 @@ Verified pages:
 
 Verified shared navigation:
 - the top navigation bar is rendered once in `frontend/src/main.jsx`
-- major pages also expose a local `Back to Library` button for quick return to the root library view
+- the top navigation now includes an explicit `Library` entry for quick return to the root library view
 - the primary nav includes a generic `Import` entry because the page handles Spotify playlists, Spotify albums, CSV, and JSON
 - the song editor and collections pages now follow the same modern card-based UI language as library, reports, and songbook
 - the song editor now exposes the existing backend tag model through a simple comma-separated tags input

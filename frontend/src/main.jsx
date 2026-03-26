@@ -25,6 +25,9 @@ function App() {
           </div>
 
           <div style={navLinks}>
+            <Link to="/" style={navLink}>
+              Library
+            </Link>
             <Link to="/import" style={navLink}>
               Import Playlist
             </Link>

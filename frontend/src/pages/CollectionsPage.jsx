@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
-import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
 export default function CollectionsPage() {
   const navigate = useNavigate();
@@ -171,7 +170,6 @@ export default function CollectionsPage() {
         </div>
 
         <div style={styles.headerActions}>
-          <BackToLibraryButton />
           {selectedId && (
             <>
               <button type="button" style={styles.secondaryBtn} onClick={printCollection}>

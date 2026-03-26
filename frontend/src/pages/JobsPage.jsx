@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
 function summarize(job) {
   const progress = job?.progress || {};
@@ -111,8 +110,6 @@ export default function JobsPage() {
           <p style={styles.eyebrow}>Background Work</p>
           <h1 style={styles.title}>Jobs</h1>
         </div>
-
-        <BackToLibraryButton />
       </header>
 
       {error && <p style={styles.error}>{error}</p>}
