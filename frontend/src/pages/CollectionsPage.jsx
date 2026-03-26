@@ -164,7 +164,6 @@ export default function CollectionsPage() {
     <div style={styles.page}>
       <header style={styles.header}>
         <div>
-          <p style={styles.eyebrow}>Collections</p>
           <h1 style={styles.title}>Collection Library</h1>
           <p style={styles.subTitle}>Group songs for browsing, curation, and printing.</p>
         </div>
@@ -347,17 +346,9 @@ const styles = {
     marginBottom: 20,
     flexWrap: 'wrap',
   },
-  eyebrow: {
-    margin: 0,
-    color: '#8a6f3f',
-    textTransform: 'uppercase',
-    letterSpacing: '0.12em',
-    fontSize: 12,
-    fontWeight: 700,
-  },
   title: {
-    margin: '6px 0 8px',
-    fontSize: 36,
+    margin: '0 0 8px',
+    fontSize: 40,
     color: '#2c241b',
   },
   subTitle: {

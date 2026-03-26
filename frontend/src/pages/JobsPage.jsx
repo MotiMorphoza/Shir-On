@@ -107,7 +107,6 @@ export default function JobsPage() {
     <div style={styles.page}>
       <header style={styles.header}>
         <div>
-          <p style={styles.eyebrow}>Background Work</p>
           <h1 style={styles.title}>Jobs</h1>
         </div>
       </header>
@@ -242,17 +241,9 @@ const styles = {
     marginBottom: 20,
     flexWrap: 'wrap',
   },
-  eyebrow: {
-    margin: 0,
-    color: '#8a6f3f',
-    textTransform: 'uppercase',
-    letterSpacing: '0.12em',
-    fontSize: 12,
-    fontWeight: 700,
-  },
   title: {
-    margin: '6px 0 8px',
-    fontSize: 36,
+    margin: '0 0 8px',
+    fontSize: 40,
     color: '#2c241b',
   },
   subTitle: {

@@ -3,13 +3,49 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import FilterBar from '../components/FilterBar.jsx';
 import SongTable from '../components/SongTable.jsx';
+import SpotifyImportCard from '../components/SpotifyImportCard.jsx';
 
 const FETCH_LIMIT = 1000;
+const LIBRARY_VIEW_KEY = 'shir_on_library_view';
+const DEFAULT_FILTERS = {
+  search: '',
+  status: '',
+  artist: '',
+  year: '',
+  sort: 'artist',
+};
+
+function readLibraryView() {
+  if (typeof window === 'undefined') {
+    return {
+      filters: DEFAULT_FILTERS,
+      playlistId: '',
+    };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LIBRARY_VIEW_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+
+    return {
+      filters: {
+        ...DEFAULT_FILTERS,
+        ...(parsed?.filters || {}),
+      },
+      playlistId: typeof parsed?.playlistId === 'string' ? parsed.playlistId : '',
+    };
+  } catch {
+    return {
+      filters: DEFAULT_FILTERS,
+      playlistId: '',
+    };
+  }
+}
 
 function getPlaylistScope(playlists, playlistId) {
   if (!playlistId) {
     return {
-      title: 'All Songs',
+      title: 'Library',
       description: 'Entire library',
     };
   }
@@ -24,16 +60,18 @@ function getPlaylistScope(playlists, playlistId) {
 
 export default function Library() {
   const navigate = useNavigate();
+  const initialView = useMemo(() => readLibraryView(), []);
 
   const [songs, setSongs] = useState([]);
-  const [filters, setFilters] = useState({ sort: 'artist' });
+  const [filters, setFilters] = useState(initialView.filters);
   const [selected, setSelected] = useState(new Set());
   const [playlists, setPlaylists] = useState([]);
-  const [playlistId, setPlaylistId] = useState('');
+  const [playlistId, setPlaylistId] = useState(initialView.playlistId);
   const [loading, setLoading] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+  const [spotifyImportInput, setSpotifyImportInput] = useState('');
 
   const scope = useMemo(() => getPlaylistScope(playlists, playlistId), [playlists, playlistId]);
   const summary = useMemo(() => {
@@ -86,6 +124,24 @@ export default function Library() {
   useEffect(() => {
     loadPlaylists();
   }, [loadPlaylists]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(
+        LIBRARY_VIEW_KEY,
+        JSON.stringify({
+          filters,
+          playlistId,
+        })
+      );
+    } catch {
+      // Ignore localStorage write failures in restricted contexts.
+    }
+  }, [filters, playlistId]);
 
   async function deleteSelected() {
     if (!selected.size || bulkBusy) {
@@ -151,27 +207,62 @@ export default function Library() {
     navigate(`/lyrics-run?ids=${ids.join(',')}`);
   }
 
+  function openSpotifyImport() {
+    if (!spotifyImportInput.trim()) {
+      return;
+    }
+
+    navigate(
+      `/import?spotify_input=${encodeURIComponent(spotifyImportInput)}&autostart=1`
+    );
+  }
+
   return (
     <div style={styles.page}>
-      <header style={styles.header}>
-        <div style={styles.headerCopy}>
-          <p style={styles.eyebrow}>Library</p>
-          <h1 style={styles.title}>{scope.title}</h1>
-          <p style={styles.subTitle}>
-            {scope.description} | {songs.length} visible song(s)
-            {songs.length >= FETCH_LIMIT ? ` (capped at ${FETCH_LIMIT})` : ''}
-          </p>
-        </div>
+      <div style={styles.headerPanel}>
+        <header style={styles.header}>
+          <div style={styles.headerCopy}>
+            <h1 style={styles.title}>{scope.title}</h1>
+            <p style={styles.subTitle}>
+              {scope.description} | {songs.length} visible song(s)
+              {songs.length >= FETCH_LIMIT ? ` (capped at ${FETCH_LIMIT})` : ''}
+            </p>
+          </div>
 
-        <div style={styles.headerActions}>
-          <button type="button" style={styles.primaryBtn} onClick={printSelected}>
-            {selected.size ? 'Print Selected' : 'Print Visible'}
-          </button>
-          <button type="button" style={styles.secondaryBtn} onClick={openLyricsRun}>
-            {selected.size ? 'Fetch Lyrics for Selected' : 'Fetch Lyrics for Visible'}
-          </button>
+          <div style={styles.headerActions}>
+            <button type="button" style={styles.primaryBtn} onClick={printSelected}>
+              {selected.size ? 'Print Selected' : 'Print Visible'}
+            </button>
+            <button type="button" style={styles.secondaryBtn} onClick={openLyricsRun}>
+              {selected.size ? 'Fetch Lyrics for Selected' : 'Fetch Lyrics for Visible'}
+            </button>
+          </div>
+        </header>
+
+        <div style={styles.spotifyImportRow}>
+          <div style={styles.spotifyImportCard}>
+            <SpotifyImportCard
+              flat
+              value={spotifyImportInput}
+              onChange={setSpotifyImportInput}
+              onSubmit={openSpotifyImport}
+              subtitle=""
+              hideFooterButton
+              disabled={!spotifyImportInput.trim()}
+              headerAction={(
+                <button
+                  type="button"
+                  style={styles.spotifyImportBtn}
+                  onClick={openSpotifyImport}
+                  disabled={!spotifyImportInput.trim()}
+                >
+                  IMPORT
+                </button>
+              )}
+            />
+          </div>
         </div>
-      </header>
+      </div>
 
       <div style={styles.scopeBar}>
         <label style={styles.scopeLabel}>
@@ -204,7 +295,10 @@ export default function Library() {
       <FilterBar
         filters={filters}
         onChange={(nextFilters) => {
-          setFilters(nextFilters || {});
+          setFilters({
+            ...DEFAULT_FILTERS,
+            ...(nextFilters || {}),
+          });
           setSelected(new Set());
           setInfo('');
           setError('');
@@ -244,12 +338,20 @@ const styles = {
     margin: '0 auto',
     padding: '28px 20px 48px',
   },
+  headerPanel: {
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 22,
+    padding: '22px 22px 18px',
+    boxShadow: '0 14px 30px rgba(77, 60, 35, 0.05)',
+    marginBottom: 16,
+  },
   header: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     gap: 16,
-    marginBottom: 22,
+    marginBottom: 18,
     flexWrap: 'wrap',
   },
   headerCopy: {
@@ -262,17 +364,9 @@ const styles = {
     flexWrap: 'wrap',
     justifyContent: 'flex-end',
   },
-  eyebrow: {
-    margin: 0,
-    color: '#8a6f3f',
-    textTransform: 'uppercase',
-    letterSpacing: '0.12em',
-    fontSize: 12,
-    fontWeight: 700,
-  },
   title: {
-    margin: '6px 0 8px',
-    fontSize: 30,
+    margin: '0 0 8px',
+    fontSize: 40,
     color: '#2c241b',
   },
   subTitle: {
@@ -309,6 +403,23 @@ const styles = {
     background: '#fffefb',
     border: '1px solid rgba(114, 98, 78, 0.18)',
     marginBottom: 14,
+  },
+  spotifyImportRow: {
+    display: 'flex',
+    justifyContent: 'center',
+  },
+  spotifyImportCard: {
+    width: 'min(540px, 100%)',
+  },
+  spotifyImportBtn: {
+    padding: '10px 16px',
+    borderRadius: 999,
+    border: 'none',
+    background: '#2f6b5f',
+    color: '#fff',
+    fontWeight: 700,
+    cursor: 'pointer',
+    letterSpacing: '0.04em',
   },
   scopeLabel: {
     display: 'grid',

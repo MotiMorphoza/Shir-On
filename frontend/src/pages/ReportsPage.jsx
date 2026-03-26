@@ -121,8 +121,7 @@ export default function ReportsPage() {
     <div style={styles.page}>
       <header style={styles.header}>
         <div>
-          <p style={styles.eyebrow}>Reports</p>
-          <h1 style={styles.title}>Batch Reports</h1>
+          <h1 style={styles.title}>Reports</h1>
         </div>
 
         <div style={styles.headerActions}>
@@ -211,17 +210,9 @@ const styles = {
     marginBottom: 20,
     flexWrap: 'wrap',
   },
-  eyebrow: {
-    margin: 0,
-    color: '#8a6f3f',
-    textTransform: 'uppercase',
-    letterSpacing: '0.12em',
-    fontSize: 12,
-    fontWeight: 700,
-  },
   title: {
-    margin: '6px 0 8px',
-    fontSize: 36,
+    margin: '0 0 8px',
+    fontSize: 40,
     color: '#2c241b',
   },
   headerActions: {

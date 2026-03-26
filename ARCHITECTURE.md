@@ -204,5 +204,19 @@ Verified capabilities:
 - RTL-aware layout for Hebrew content
 - artist-sorted output with a clickable digital TOC
 - configurable page size, margins, TOC, line spacing, and supported single-song / two-song page layouts
-- single-song prints can use a supported two-column lyrics layout
+- printed songbooks now render in a two-column page structure
+- short pages can hold two songs side by side, while longer single-song pages can flow from the first column into the second
+- the printed table of contents also uses a two-column layout
+- each printed song is constrained to one physical page, with smaller font presets used when a long song needs to stay within that page
+- the PDF renderer now assigns page numbers to song pages and includes those numbers in the printed table of contents
+- Hebrew single-song pages now flow from the right column first
+- non-Hebrew single-song pages now flow from the left column first
+- the print layout uses reduced header/footer spacing and denser TOC spacing to fit more content into the same page footprint
+- TOC pages are now split into explicit right/left columns in code instead of relying on browser multi-column balancing
+- TOC rows now flow sequentially through the right column and then the left, even across artist boundaries, to reduce dead space
+- the print engine now measures page geometry, TOC rows, and lyric token heights in a hidden Puppeteer harness, then performs page and column assignment deterministically in Node
+- long printed songs now render through explicit right/left page columns in the final HTML markup, with their token split decided before the final PDF render
+- print-column language selection now follows song title/lyrics content instead of artist or album metadata, so non-Hebrew songs keep their left-column start rule
+- Hebrew song headers now keep one right-aligned metadata block even when artist names or album metadata use Latin characters
+- print margins, footer space, and lyric line spacing were tightened again after the first working two-column format to fit more content into each physical page
 - the current frontend now triggers print from the visible library scope, the current songbook scope, or a single song page

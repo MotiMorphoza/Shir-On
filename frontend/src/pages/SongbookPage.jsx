@@ -1,9 +1,86 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
 
+const SONGBOOK_VIEW_KEY = 'shir_on_songbook_view';
+const SONGBOOK_RETURN_KEY = 'shir_on_songbook_return';
+const SONGBOOK_NAV_RESET_KEY = 'shir_on_songbook_nav_reset';
+
 function isHebrewText(value = '') {
   return /[\u0590-\u05FF]/.test(String(value || ''));
+}
+
+function readSongbookView() {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  try {
+    return window.localStorage.getItem(SONGBOOK_VIEW_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function storeSongbookReturn(target) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(SONGBOOK_RETURN_KEY, JSON.stringify(target || {}));
+  } catch {
+    // Ignore sessionStorage failures in restricted contexts.
+  }
+}
+
+function readSongbookReturn() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(SONGBOOK_RETURN_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearSongbookReturn() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.removeItem(SONGBOOK_RETURN_KEY);
+  } catch {
+    // Ignore sessionStorage failures in restricted contexts.
+  }
+}
+
+function readSongbookNavReset() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    return window.sessionStorage.getItem(SONGBOOK_NAV_RESET_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function clearSongbookNavReset() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.removeItem(SONGBOOK_NAV_RESET_KEY);
+  } catch {
+    // Ignore sessionStorage failures in restricted contexts.
+  }
 }
 
 function groupSongsByArtist(songs) {
@@ -28,9 +105,10 @@ function groupSongsByArtist(songs) {
 }
 
 export default function SongbookPage() {
+  const tocCardRef = useRef(null);
   const [songs, setSongs] = useState([]);
   const [playlists, setPlaylists] = useState([]);
-  const [selectedPlaylistId, setSelectedPlaylistId] = useState('');
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState(() => readSongbookView());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -96,6 +174,71 @@ export default function SongbookPage() {
     };
   }, [selectedPlaylistId]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(SONGBOOK_VIEW_KEY, selectedPlaylistId || '');
+    } catch {
+      // Ignore localStorage failures in restricted contexts.
+    }
+  }, [selectedPlaylistId]);
+
+  useEffect(() => {
+    if (loading || error || songs.length === 0 || typeof window === 'undefined') {
+      return;
+    }
+
+    if (readSongbookNavReset()) {
+      const reset = window.requestAnimationFrame(() => {
+        if (tocCardRef.current) {
+          tocCardRef.current.scrollTop = 0;
+        }
+
+        window.scrollTo({ top: 0, behavior: 'auto' });
+        clearSongbookReturn();
+        clearSongbookNavReset();
+      });
+
+      return () => window.cancelAnimationFrame(reset);
+    }
+
+    const pendingReturn = readSongbookReturn();
+
+    if (!pendingReturn?.songId) {
+      return;
+    }
+
+    if ((pendingReturn.playlistId || '') !== (selectedPlaylistId || '')) {
+      return;
+    }
+
+    const restore = window.requestAnimationFrame(() => {
+      if (tocCardRef.current) {
+        if (typeof pendingReturn.tocScrollTop === 'number') {
+          tocCardRef.current.scrollTop = pendingReturn.tocScrollTop;
+        } else {
+          const tocLink = document.getElementById(`toc-song-${pendingReturn.songId}`);
+          tocLink?.scrollIntoView({ block: 'center', behavior: 'auto' });
+        }
+      }
+
+      const songElement = document.getElementById(`song-${pendingReturn.songId}`);
+
+      if (songElement) {
+        songElement.scrollIntoView({ block: 'start', behavior: 'auto' });
+      } else if (typeof pendingReturn.scrollY === 'number') {
+        window.scrollTo({ top: pendingReturn.scrollY, behavior: 'auto' });
+      }
+
+      clearSongbookReturn();
+    });
+
+    return () => window.cancelAnimationFrame(restore);
+  }, [loading, error, songs, selectedPlaylistId]);
+
   const artistGroups = useMemo(() => groupSongsByArtist(songs), [songs]);
   const selectedPlaylistName = useMemo(() => {
     if (!selectedPlaylistId) {
@@ -136,8 +279,7 @@ export default function SongbookPage() {
     <div style={styles.page}>
       <header style={styles.header}>
         <div>
-          <p style={styles.eyebrow}>Digital Songbook</p>
-          <h1 style={styles.title}>Songbook</h1>
+          <h1 style={styles.title}>Digital Songbook</h1>
           <p style={styles.subTitle}>
             {selectedPlaylistName} | {songs.length} song(s) | {artistGroups.length} artist group(s)
           </p>
@@ -171,7 +313,7 @@ export default function SongbookPage() {
       {!loading && !error && (
         <div style={styles.layout}>
           <aside style={styles.toc}>
-            <div style={styles.tocCard}>
+            <div ref={tocCardRef} style={styles.tocCard}>
               <strong style={styles.tocTitle}>Table of Contents</strong>
               <p style={styles.tocHint}>
                 {selectedPlaylistName} | {songs.length} songs
@@ -179,9 +321,22 @@ export default function SongbookPage() {
 
               {artistGroups.map((group) => (
                 <div key={group.artist} style={styles.tocGroup}>
-                  <div style={styles.tocArtist}>{group.artist}</div>
+                  <div
+                    style={{
+                      ...styles.tocArtist,
+                      direction: isHebrewText(group.artist) ? 'rtl' : 'ltr',
+                      textAlign: isHebrewText(group.artist) ? 'right' : 'left',
+                    }}
+                  >
+                    {group.artist}
+                  </div>
                   {group.songs.map((song) => (
-                    <a key={song.id} href={`#song-${song.id}`} style={styles.tocLink}>
+                    <a
+                      key={song.id}
+                      id={`toc-song-${song.id}`}
+                      href={`#song-${song.id}`}
+                      style={styles.tocLink}
+                    >
                       {song.title}
                     </a>
                   ))}
@@ -232,7 +387,18 @@ export default function SongbookPage() {
                           </p>
                         </div>
 
-                        <Link to={`/songs/${song.id}`} style={styles.openLink}>
+                        <Link
+                          to={`/songs/${song.id}`}
+                          style={styles.openLink}
+                          onClick={() =>
+                            storeSongbookReturn({
+                              songId: song.id,
+                              playlistId: selectedPlaylistId || '',
+                              scrollY: window.scrollY,
+                              tocScrollTop: tocCardRef.current?.scrollTop || 0,
+                            })
+                          }
+                        >
                           Open
                         </Link>
                       </div>
@@ -280,17 +446,9 @@ const styles = {
     marginBottom: 24,
     flexWrap: 'wrap',
   },
-  eyebrow: {
-    margin: 0,
-    color: '#8a6f3f',
-    textTransform: 'uppercase',
-    letterSpacing: '0.12em',
-    fontSize: 12,
-    fontWeight: 700,
-  },
   title: {
-    margin: '6px 0 8px',
-    fontSize: 38,
+    margin: '0 0 8px',
+    fontSize: 42,
     color: '#2c241b',
   },
   subTitle: {
@@ -398,6 +556,7 @@ const styles = {
     borderRadius: 18,
     padding: 20,
     boxShadow: '0 14px 30px rgba(77, 60, 35, 0.06)',
+    scrollMarginTop: 132,
   },
   songHeader: {
     display: 'flex',

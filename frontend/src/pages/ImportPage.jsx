@@ -1,40 +1,33 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, BASE as API_BASE } from '../api/client.js';
+import SpotifyImportCard from '../components/SpotifyImportCard.jsx';
 
 const LAST_IMPORT_JOB_KEY = 'shir-on:last-import-job';
 
-function extractSpotifyId(input, expectedType = null) {
+function detectSpotifyInputKind(input) {
   const value = String(input || '').trim();
   if (!value) {
     return '';
   }
 
-  if (/^[A-Za-z0-9]{10,}$/.test(value)) {
-    return value;
-  }
-
-  const uriMatch = value.match(/^spotify:(playlist|album):([A-Za-z0-9]+)$/i);
+  const uriMatch = value.match(/^spotify:(playlist|album|track):([A-Za-z0-9]+)$/i);
   if (uriMatch) {
-    const [, type, id] = uriMatch;
-    if (!expectedType || type.toLowerCase() === expectedType.toLowerCase()) {
-      return id;
-    }
-    return '';
+    return uriMatch[1].toLowerCase();
   }
 
   const urlMatch = value.match(
-    /spotify\.com\/(playlist|album)\/([A-Za-z0-9]+)(?:\?|#|\/|$)/i
+    /spotify\.com\/(playlist|album|track)\/([A-Za-z0-9]+)(?:\?|#|\/|$)/i
   );
   if (urlMatch) {
-    const [, type, id] = urlMatch;
-    if (!expectedType || type.toLowerCase() === expectedType.toLowerCase()) {
-      return id;
-    }
-    return '';
+    return urlMatch[1].toLowerCase();
   }
 
-  return '';
+  if (/^[A-Za-z0-9]{10,}$/.test(value)) {
+    return 'auto';
+  }
+
+  return 'invalid';
 }
 
 function summaryLine(result) {
@@ -93,8 +86,13 @@ export default function ImportPage() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
 
-  const [playlistInput, setPlaylistInput] = useState(searchParams.get('playlist') || '');
-  const [albumInput, setAlbumInput] = useState(searchParams.get('album') || '');
+  const initialSpotifyInput =
+    searchParams.get('spotify_input') ||
+    searchParams.get('playlist') ||
+    searchParams.get('album') ||
+    '';
+
+  const [spotifyInput, setSpotifyInput] = useState(initialSpotifyInput);
   const [jsonInput, setJsonInput] = useState('');
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
@@ -102,13 +100,23 @@ export default function ImportPage() {
   const [spotifyStatus, setSpotifyStatus] = useState(null);
   const [checkingSpotify, setCheckingSpotify] = useState(true);
   const [activeJob, setActiveJob] = useState(null);
+  const [autoStartRequested, setAutoStartRequested] = useState(
+    searchParams.get('autostart') === '1'
+  );
   const spotifyError = searchParams.get('spotify_error') || '';
 
-  const playlistId = useMemo(
-    () => extractSpotifyId(playlistInput, 'playlist'),
-    [playlistInput]
+  const spotifyInputKind = useMemo(
+    () => detectSpotifyInputKind(spotifyInput),
+    [spotifyInput]
   );
-  const albumId = useMemo(() => extractSpotifyId(albumInput, 'album'), [albumInput]);
+
+  useEffect(() => {
+    if (initialSpotifyInput) {
+      setSpotifyInput(initialSpotifyInput);
+    }
+
+    setAutoStartRequested(searchParams.get('autostart') === '1');
+  }, [initialSpotifyInput, searchParams]);
 
   useEffect(() => {
     let cancelled = false;
@@ -195,7 +203,9 @@ export default function ImportPage() {
   }, [activeJob?.id]);
 
   function connectSpotify() {
-    const returnTo = `/import?playlist=${encodeURIComponent(playlistInput)}&album=${encodeURIComponent(albumInput)}&spotify=connected`;
+    const returnTo = `/import?spotify_input=${encodeURIComponent(spotifyInput)}&spotify=connected${
+      autoStartRequested ? '&autostart=1' : ''
+    }`;
     window.location.href = `${API_BASE}/spotify/login?returnTo=${encodeURIComponent(returnTo)}`;
   }
 
@@ -236,6 +246,42 @@ export default function ImportPage() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (
+      !autoStartRequested ||
+      checkingSpotify ||
+      loading ||
+      activeJob?.id ||
+      !spotifyStatus?.authenticated ||
+      !spotifyInput.trim()
+    ) {
+      return;
+    }
+
+    setAutoStartRequested(false);
+
+    const nextSearch = new URLSearchParams(searchParams);
+    nextSearch.delete('autostart');
+    navigate(
+      {
+        pathname: '/import',
+        search: nextSearch.toString() ? `?${nextSearch.toString()}` : '',
+      },
+      { replace: true }
+    );
+
+    startJob(() => api.startSpotifyImportJob(spotifyInput));
+  }, [
+    activeJob?.id,
+    autoStartRequested,
+    checkingSpotify,
+    loading,
+    navigate,
+    searchParams,
+    spotifyInput,
+    spotifyStatus?.authenticated,
+  ]);
 
   async function handleCsvUpload(event) {
     const file = event.target.files?.[0];
@@ -283,121 +329,106 @@ export default function ImportPage() {
     <div style={styles.page}>
       <header style={styles.header}>
         <div>
-          <p style={styles.eyebrow}>Import</p>
-          <h1 style={styles.title}>Bring Songs Into Shir-On</h1>
+          <h1 style={styles.title}>Import</h1>
+        </div>
+
+        <div style={styles.headerActions}>
+          {searchParams.get('spotify') === 'connected' && (
+            <span style={styles.badge}>Returned from Spotify</span>
+          )}
+          {searchParams.get('spotify') === 'error' && (
+            <span style={styles.errorBadge}>Spotify auth failed</span>
+          )}
+          {!checkingSpotify && spotifyStatus?.configured && (
+            spotifyStatus?.authenticated ? (
+              <button type="button" style={styles.secondaryBtn} onClick={disconnectSpotify} disabled={loading}>
+                Disconnect Spotify
+              </button>
+            ) : (
+              <button type="button" style={styles.primaryBtn} onClick={connectSpotify}>
+                Connect Spotify
+              </button>
+            )
+          )}
         </div>
       </header>
 
-      <section style={styles.section}>
-        <div style={styles.sectionHeader}>
-          <div>
-            <h2 style={styles.sectionTitle}>Spotify Connection</h2>
-          </div>
-          <div style={styles.sectionHeaderActions}>
-            {searchParams.get('spotify') === 'connected' && (
-              <span style={styles.badge}>Returned from Spotify</span>
-            )}
-            {searchParams.get('spotify') === 'error' && (
-              <span style={styles.errorBadge}>Spotify auth failed</span>
-            )}
-            {!checkingSpotify && spotifyStatus?.configured && (
-              spotifyStatus?.authenticated ? (
-                <button type="button" style={styles.secondaryBtn} onClick={disconnectSpotify} disabled={loading}>
-                  Disconnect
-                </button>
-              ) : (
-                <button type="button" style={styles.primaryBtn} onClick={connectSpotify}>
-                  Connect Spotify
-                </button>
-              )
-            )}
-          </div>
-        </div>
+      {searchParams.get('spotify') === 'error' && spotifyError && (
+        <p style={styles.error}>
+          Spotify returned an auth error: <code>{spotifyError}</code>
+        </p>
+      )}
 
-        {searchParams.get('spotify') === 'error' && spotifyError && (
-          <p style={styles.error}>
-            Spotify returned an auth error: <code>{spotifyError}</code>
+      {checkingSpotify && <p style={styles.info}>Checking Spotify session...</p>}
+
+      {!checkingSpotify && !spotifyStatus?.configured && (
+        <>
+          <p style={styles.error}>Spotify is not configured on the backend.</p>
+          <p style={styles.info}>
+            Missing env vars: <code>{(spotifyStatus?.missing || []).join(', ') || 'unknown'}</code>
           </p>
-        )}
-
-        {checkingSpotify ? (
-          <p style={styles.info}>Checking Spotify session...</p>
-        ) : !spotifyStatus?.configured ? (
-          <>
-            <p style={styles.error}>Spotify is not configured on the backend.</p>
+          {spotifyStatus?.redirect_uri && (
             <p style={styles.info}>
-              Missing env vars: <code>{(spotifyStatus?.missing || []).join(', ') || 'unknown'}</code>
+              Expected redirect URI: <code>{spotifyStatus.redirect_uri}</code>
             </p>
-            {spotifyStatus?.redirect_uri && (
-              <p style={styles.info}>
-                Expected redirect URI: <code>{spotifyStatus.redirect_uri}</code>
-              </p>
-            )}
-          </>
-        ) : spotifyStatus?.authenticated ? (
-          <p style={styles.success}>
-            Connected
-            {spotifyStatus?.account?.display_name ? ` as ${spotifyStatus.account.display_name}` : ''}.
-          </p>
-        ) : (
-          <p style={styles.info}>Connect Spotify to enable playlist and album imports.</p>
-        )}
-      </section>
+          )}
+        </>
+      )}
+
+      {!checkingSpotify && spotifyStatus?.configured && spotifyStatus?.authenticated && (
+        <p style={styles.success}>
+          Connected
+          {spotifyStatus?.account?.display_name ? ` as ${spotifyStatus.account.display_name}` : ''}.
+        </p>
+      )}
 
       <div style={styles.grid}>
-        <section style={styles.section}>
-          <h2 style={styles.sectionTitle}>Spotify Playlist</h2>
-          <input
-            style={styles.input}
-            placeholder="Playlist URL, URI, or ID"
-            value={playlistInput}
-            onChange={(e) => setPlaylistInput(e.target.value)}
-          />
-          <div style={styles.inlineRow}>
-            <button
-              type="button"
-              style={styles.primaryBtn}
-              disabled={loading || !spotifyStatus?.authenticated || !playlistId}
-              onClick={() => startJob(() => api.startPlaylistImportJob(playlistId))}
-            >
-              Start Background Import
-            </button>
-          </div>
-          {playlistInput && !playlistId && <p style={styles.error}>Invalid Spotify playlist URL or ID.</p>}
-        </section>
+        <SpotifyImportCard
+          value={spotifyInput}
+          onChange={setSpotifyInput}
+          onSubmit={() => startJob(() => api.startSpotifyImportJob(spotifyInput))}
+          buttonLabel="Start Background Import"
+          disabled={
+            loading ||
+            !spotifyStatus?.authenticated ||
+            !spotifyInput.trim() ||
+            spotifyInputKind === 'invalid'
+          }
+        >
+          {spotifyInputKind === 'playlist' && (
+            <p style={styles.info}>Detected: Spotify playlist</p>
+          )}
+          {spotifyInputKind === 'album' && (
+            <p style={styles.info}>Detected: Spotify album</p>
+          )}
+          {spotifyInputKind === 'track' && (
+            <p style={styles.info}>Detected: Spotify song</p>
+          )}
+          {spotifyInputKind === 'auto' && (
+            <p style={styles.info}>Detected from raw Spotify ID when import starts.</p>
+          )}
+          {spotifyInput && spotifyInputKind === 'invalid' && (
+            <p style={styles.error}>Invalid Spotify URL, URI, or ID.</p>
+          )}
+        </SpotifyImportCard>
 
         <section style={styles.section}>
-          <h2 style={styles.sectionTitle}>Spotify Album</h2>
+          <h2 style={styles.sectionTitle}>CSV Upload</h2>
+          <p style={styles.sectionHint}>Columns: title, artist, album, year, language</p>
           <input
-            style={styles.input}
-            placeholder="Album URL, URI, or ID"
-            value={albumInput}
-            onChange={(e) => setAlbumInput(e.target.value)}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={handleCsvUpload}
           />
-          <div style={styles.inlineRow}>
-            <button
-              type="button"
-              style={styles.primaryBtn}
-              disabled={loading || !spotifyStatus?.authenticated || !albumId}
-              onClick={() => startJob(() => api.startAlbumImportJob(albumId))}
-            >
-              Start Background Import
-            </button>
-          </div>
-          {albumInput && !albumId && <p style={styles.error}>Invalid Spotify album URL or ID.</p>}
         </section>
       </div>
 
       <div style={styles.grid}>
         <section style={styles.section}>
-          <h2 style={styles.sectionTitle}>CSV Upload</h2>
-          <p style={styles.sectionHint}>Columns: title, artist, album, year, language</p>
-          <input type="file" accept=".csv,text/csv" onChange={handleCsvUpload} />
-        </section>
-
-        <section style={styles.section}>
           <h2 style={styles.sectionTitle}>JSON Import</h2>
-          <p style={styles.sectionHint}>Paste an array of records with song fields.</p>
+          <p style={styles.sectionHint}>
+            Advanced import for pasted export data or script output. Paste an array of song records.
+          </p>
           <textarea
             style={styles.textarea}
             value={jsonInput}
@@ -509,18 +540,18 @@ const styles = {
     marginBottom: 24,
     flexWrap: 'wrap',
   },
-  eyebrow: {
-    margin: 0,
-    color: '#8a6f3f',
-    textTransform: 'uppercase',
-    letterSpacing: '0.12em',
-    fontSize: 12,
-    fontWeight: 700,
-  },
   title: {
-    margin: '6px 0 8px',
-    fontSize: 36,
+    margin: '0 0 8px',
+    fontSize: 40,
     color: '#2c241b',
+  },
+  headerActions: {
+    display: 'flex',
+    gap: 10,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexWrap: 'wrap',
+    marginLeft: 'auto',
   },
   subTitle: {
     margin: 0,
@@ -540,21 +571,6 @@ const styles = {
     borderRadius: 18,
     padding: 20,
     boxShadow: '0 14px 30px rgba(77, 60, 35, 0.05)',
-  },
-  sectionHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    gap: 12,
-    alignItems: 'flex-start',
-    flexWrap: 'wrap',
-    marginBottom: 8,
-  },
-  sectionHeaderActions: {
-    display: 'flex',
-    gap: 10,
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
   },
   sectionTitle: {
     margin: 0,

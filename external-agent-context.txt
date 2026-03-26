@@ -1,0 +1,4554 @@
+﻿Shir-On external agent context bundle
+Generated: 2026-03-26T07:33:07.3546789+02:00
+
+Included files:
+- backend/src/print/engine.js
+- backend/src/routes/print.js
+- frontend/src/api/client.js
+- frontend/src/pages/SongbookPage.jsx
+- frontend/src/pages/Library.jsx
+- frontend/src/pages/SongPage.jsx
+- frontend/src/pages/CollectionsPage.jsx
+- README.md
+- ARCHITECTURE.md
+- AUDIT.md
+- KNOWN_ISSUES.md
+- AGENTS.md
+
+============================================================
+
+FILE: backend/src/print/engine.js
+------------------------------------------------------------
+import puppeteer from 'puppeteer';
+import { sanitizeText } from '../utils/sanitize.js';
+
+const FONT_SIZE_PRESETS = {
+  small: 11,
+  medium: 13,
+  large: 16,
+};
+
+const LINE_HEIGHT_PRESETS = {
+  tight: 1.35,
+  normal: 1.65,
+  loose: 1.95,
+};
+
+const MARGIN_PRESETS = {
+  narrow: '8mm',
+  normal: '12mm',
+  wide: '16mm',
+};
+
+const PAGE_SIZE_PRESETS = {
+  A4: { width: '210mm', height: '297mm' },
+  Letter: { width: '216mm', height: '279mm' },
+};
+
+const FONT_VARIANTS = [
+  { className: 'font-regular' },
+  { className: 'font-compact-1' },
+  { className: 'font-compact-2' },
+  { className: 'font-compact-3' },
+  { className: 'font-compact-4' },
+  { className: 'font-compact-5' },
+  { className: 'font-compact-6' },
+  { className: 'font-compact-7' },
+  { className: 'font-compact-8' },
+];
+
+function isHebrewText(text) {
+  return /[\u0590-\u05FF]/.test(String(text || ''));
+}
+
+function songIsHebrew(song) {
+  return (
+    isHebrewText(song?.title) ||
+    isHebrewText(song?.artist_name) ||
+    isHebrewText(song?.album_title) ||
+    isHebrewText(song?.lyrics?.text)
+  );
+}
+
+function textDirectionClass(text) {
+  return isHebrewText(text) ? 'rtl' : 'ltr';
+}
+
+function sortSongsForBook(songs = []) {
+  return [...songs].sort((a, b) => {
+    const artistCompare = String(a?.artist_name || '').localeCompare(String(b?.artist_name || ''));
+
+    if (artistCompare !== 0) {
+      return artistCompare;
+    }
+
+    return String(a?.title || '').localeCompare(String(b?.title || ''));
+  });
+}
+
+function buildLyricsTokens(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line, index, lines) => {
+      const empty = line.trim() === '';
+      const previousEmpty = index > 0 ? lines[index - 1].trim() === '' : false;
+
+      if (empty && previousEmpty) {
+        return null;
+      }
+
+      return empty ? { type: 'spacer' } : { type: 'line', text: String(line) };
+    })
+    .filter(Boolean);
+}
+
+function normalizeTokens(tokens) {
+  return tokens.length ? tokens : [{ type: 'missing', text: 'Lyrics not available.' }];
+}
+
+function prepareSongs(inputSongs) {
+  return sortSongsForBook(inputSongs).map((song) => ({
+    id: song.id,
+    title: String(song?.title || ''),
+    artist_name: String(song?.artist_name || 'Unknown Artist'),
+    album_title: String(song?.album_title || ''),
+    year: song?.year ? String(song.year) : '',
+    isHebrew: songIsHebrew(song),
+    tokens: normalizeTokens(buildLyricsTokens(song?.lyrics?.text || '')),
+  }));
+}
+
+function getPageMetrics(config = {}) {
+  const format = PAGE_SIZE_PRESETS[config.format] ? config.format : 'A4';
+
+  return {
+    format,
+    pageSize: PAGE_SIZE_PRESETS[format],
+    margin: MARGIN_PRESETS[config.margins] || MARGIN_PRESETS.normal,
+    baseFontSize: FONT_SIZE_PRESETS[config.fontSize] || FONT_SIZE_PRESETS.medium,
+    lineHeight: LINE_HEIGHT_PRESETS[config.lineSpacing] || LINE_HEIGHT_PRESETS.normal,
+    includeToc: config.includeToc !== false,
+    songsPerPage: Number(config.songsPerPage) === 1 ? 1 : 2,
+  };
+}
+
+function buildStyles(metrics) {
+  return `
+    :root {
+      --page-width: ${metrics.pageSize.width};
+      --page-height: ${metrics.pageSize.height};
+      --page-margin: ${metrics.margin};
+      --content-width: calc(var(--page-width) - (2 * var(--page-margin)));
+      --content-height: calc(var(--page-height) - (2 * var(--page-margin)));
+      --footer-height: 3.6mm;
+      --body-height: calc(var(--content-height) - var(--footer-height));
+      --column-gap: 5.5mm;
+      --column-width: calc((var(--content-width) - var(--column-gap)) / 2);
+      --card-padding-y: 2.8mm;
+      --card-padding-x: 3.2mm;
+    }
+
+    @page {
+      size: ${metrics.format};
+      margin: var(--page-margin);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #fff;
+      color: #111;
+      font-family: "Times New Roman", Georgia, serif;
+    }
+
+    body {
+      font-size: ${metrics.baseFontSize}px;
+      line-height: ${metrics.lineHeight};
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .book {
+      width: var(--content-width);
+    }
+
+    .book-page {
+      position: relative;
+      width: var(--content-width);
+      height: var(--content-height);
+      overflow: hidden;
+      page-break-after: always;
+      break-after: page;
+    }
+
+    .book-page:last-child {
+      page-break-after: auto;
+      break-after: auto;
+    }
+
+    .page-body {
+      height: var(--body-height);
+      min-height: 0;
+    }
+
+    .two-column {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: var(--column-gap);
+      align-items: start;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .page-column,
+    .flow-column,
+    .toc-column {
+      min-width: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .page-column-right,
+    .flow-column-right,
+    .toc-column-right {
+      grid-column: 2;
+    }
+
+    .page-column-left,
+    .flow-column-left,
+    .toc-column-left {
+      grid-column: 1;
+    }
+
+    .toc-page-body {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 1.1mm;
+    }
+
+    .toc-page-body.continued {
+      gap: 0.7mm;
+    }
+
+    .toc-page h1 {
+      margin: 0;
+      text-align: center;
+      font-size: 1.3em;
+      line-height: 1.05;
+    }
+
+    .toc-spacer {
+      height: 2mm;
+    }
+
+    .toc-columns {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: var(--column-gap);
+      align-items: start;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .toc-heading {
+      margin: 0 0 0.45mm 0;
+      font-size: 0.86em;
+      line-height: 1.02;
+      font-weight: 700;
+    }
+
+    .toc-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 2.4mm;
+      margin: 0 0 0.28mm 0;
+      font-size: 0.8em;
+      line-height: 1.03;
+    }
+
+    .toc-text {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .toc-page-number {
+      flex: 0 0 auto;
+      min-width: 6mm;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .page-spread,
+    .song-flow-page {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: var(--column-gap);
+      align-items: start;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .song-card {
+      border: 1px solid #d9d9d9;
+      border-radius: 2.2mm;
+      padding: var(--card-padding-y) var(--card-padding-x);
+      background: #fff;
+      min-width: 0;
+    }
+
+    .flow-pane {
+      padding: 0 0.6mm;
+      min-width: 0;
+    }
+
+    .song-header {
+      margin: 0 0 1.35mm 0;
+      padding-bottom: 1.1mm;
+      border-bottom: 1px solid #ececec;
+    }
+
+    .song-header-main {
+      display: grid;
+      gap: 0.5mm;
+    }
+
+    .song-title {
+      margin: 0;
+      font-size: 1.08em;
+      line-height: 1.1;
+    }
+
+    .song-artist {
+      margin: 0;
+      font-size: 0.9em;
+      line-height: 1.05;
+      color: #333;
+      font-weight: 700;
+    }
+
+    .song-meta {
+      margin: 0;
+      font-size: 0.78em;
+      line-height: 1.05;
+      color: #555;
+    }
+
+    .song-lyrics {
+      white-space: normal;
+    }
+
+    .lyrics-line {
+      margin: 0 0 0.85mm 0;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    .lyrics-spacer {
+      height: 1.05mm;
+    }
+
+    .missing {
+      margin: 0;
+      color: #777;
+      font-style: italic;
+    }
+
+    .page-number {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0.55mm;
+      text-align: center;
+      font-size: 0.66em;
+      line-height: 1;
+      color: #555;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .rtl {
+      direction: rtl;
+      text-align: right;
+    }
+
+    .ltr {
+      direction: ltr;
+      text-align: left;
+    }
+
+    .font-regular {
+      font-size: 1em;
+      line-height: inherit;
+    }
+
+    .font-compact-1 {
+      font-size: 0.93em;
+      line-height: 1.56;
+    }
+
+    .font-compact-2 {
+      font-size: 0.87em;
+      line-height: 1.49;
+    }
+
+    .font-compact-3 {
+      font-size: 0.81em;
+      line-height: 1.42;
+    }
+
+    .font-compact-4 {
+      font-size: 0.75em;
+      line-height: 1.35;
+    }
+
+    .font-compact-5 {
+      font-size: 0.69em;
+      line-height: 1.28;
+    }
+
+    .font-compact-6 {
+      font-size: 0.63em;
+      line-height: 1.22;
+    }
+
+    .font-compact-7 {
+      font-size: 0.57em;
+      line-height: 1.16;
+    }
+
+    .font-compact-8 {
+      font-size: 0.52em;
+      line-height: 1.12;
+    }
+
+    .measure-stage {
+      position: fixed;
+      top: 0;
+      left: -1000mm;
+      visibility: hidden;
+      pointer-events: none;
+    }
+  `;
+}
+
+function renderLyricsHtml(tokens = []) {
+  return tokens
+    .map((token) => {
+      if (token.type === 'spacer') {
+        return '<div class="lyrics-spacer"></div>';
+      }
+
+      if (token.type === 'missing') {
+        return `<p class="missing">${sanitizeText(token.text || 'Lyrics not available.')}</p>`;
+      }
+
+      return `<div class="lyrics-line">${sanitizeText(token.text || '') || '&nbsp;'}</div>`;
+    })
+    .join('');
+}
+
+function songHeaderHtml(song) {
+  const meta = [song.album_title || 'Single', song.year || ''].filter(Boolean).join(' | ');
+
+  return `
+    <header class="song-header">
+      <div class="song-header-main">
+        <h2 class="song-title ${textDirectionClass(song.title)}">${sanitizeText(song.title || '')}</h2>
+        <p class="song-artist ${textDirectionClass(song.artist_name)}">${sanitizeText(song.artist_name || 'Unknown Artist')}</p>
+        <p class="song-meta ${textDirectionClass(meta)}">${sanitizeText(meta)}</p>
+      </div>
+    </header>
+  `;
+}
+
+function songCardHtml(songLayout) {
+  return `
+    <article id="song-${sanitizeText(songLayout.song.id || '')}" class="song-card ${songLayout.song.isHebrew ? 'rtl' : 'ltr'} ${songLayout.fontClass}">
+      ${songHeaderHtml(songLayout.song)}
+      <div class="song-lyrics">
+        ${renderLyricsHtml(songLayout.tokens)}
+      </div>
+    </article>
+  `;
+}
+
+function flowPaneHtml(song, fontClass, tokens, includeHeader) {
+  return `
+    <div class="flow-pane ${song.isHebrew ? 'rtl' : 'ltr'} ${fontClass}">
+      ${includeHeader ? songHeaderHtml(song) : ''}
+      <div class="song-lyrics">
+        ${renderLyricsHtml(tokens)}
+      </div>
+    </div>
+  `;
+}
+
+function songFlowPageHtml(songLayout) {
+  const startClass = songLayout.startColumn === 'right' ? 'right' : 'left';
+  const continueClass = startClass === 'right' ? 'left' : 'right';
+
+  return `
+    <div class="page-body">
+      <article id="song-${sanitizeText(songLayout.song.id || '')}" class="song-flow-page">
+        <div class="flow-column flow-column-${startClass}">
+          ${flowPaneHtml(songLayout.song, songLayout.fontClass, songLayout.startTokens, true)}
+        </div>
+        <div class="flow-column flow-column-${continueClass}">
+          ${flowPaneHtml(songLayout.song, songLayout.fontClass, songLayout.continueTokens, false)}
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function placeCompactSongs(songLayouts) {
+  const columns = { right: null, left: null };
+
+  if (!songLayouts.length) {
+    return columns;
+  }
+
+  if (songLayouts.length === 1) {
+    columns[songLayouts[0].startColumn] = songLayouts[0];
+    return columns;
+  }
+
+  const [first, second] = songLayouts;
+
+  if (first.startColumn !== second.startColumn) {
+    columns[first.startColumn] = first;
+    columns[second.startColumn] = second;
+    return columns;
+  }
+
+  columns[first.startColumn] = first;
+  columns[first.startColumn === 'right' ? 'left' : 'right'] = second;
+  return columns;
+}
+
+function paginateSongLayouts(songLayouts, songsPerPage) {
+  const pages = [];
+
+  for (let index = 0; index < songLayouts.length; index += 1) {
+    const current = songLayouts[index];
+    const next = songLayouts[index + 1];
+
+    if (songsPerPage !== 1 && current.mode === 'compact' && next?.mode === 'compact') {
+      pages.push({
+        layout: 'spread',
+        columns: placeCompactSongs([current, next]),
+      });
+      index += 1;
+      continue;
+    }
+
+    if (current.mode === 'compact') {
+      pages.push({
+        layout: 'spread',
+        columns: placeCompactSongs([current]),
+      });
+      continue;
+    }
+
+    pages.push({
+      layout: 'single',
+      song: current,
+    });
+  }
+
+  return pages;
+}
+
+function buildSongPageNumbers(songPages, tocPagesCount) {
+  const pageNumbers = new Map();
+
+  songPages.forEach((page, index) => {
+    const pageNumber = tocPagesCount + index + 1;
+
+    if (page.layout === 'single') {
+      pageNumbers.set(page.song.song.id, pageNumber);
+      return;
+    }
+
+    if (page.columns.right) {
+      pageNumbers.set(page.columns.right.song.id, pageNumber);
+    }
+
+    if (page.columns.left) {
+      pageNumbers.set(page.columns.left.song.id, pageNumber);
+    }
+  });
+
+  return pageNumbers;
+}
+
+function buildTocRows(songs, pageNumbers) {
+  const artistGroups = new Map();
+
+  for (const song of songs) {
+    const artist = song.artist_name || 'Unknown Artist';
+
+    if (!artistGroups.has(artist)) {
+      artistGroups.set(artist, []);
+    }
+
+    artistGroups.get(artist).push(song);
+  }
+
+  const rows = [];
+
+  for (const [artist, artistSongs] of [...artistGroups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    rows.push({
+      type: 'heading',
+      text: artist,
+      direction: textDirectionClass(artist),
+    });
+
+    for (const song of artistSongs) {
+      rows.push({
+        type: 'song',
+        id: song.id,
+        title: song.title || '',
+        direction: textDirectionClass(song.title),
+        pageNumber: String(pageNumbers.get(song.id) || ''),
+      });
+    }
+  }
+
+  return rows;
+}
+
+function tocRowHtml(row) {
+  if (row.type === 'heading') {
+    return `<div class="toc-heading ${row.direction}">${sanitizeText(row.text)}</div>`;
+  }
+
+  return `
+    <a class="toc-row ${row.direction}" href="#song-${sanitizeText(row.id || '')}">
+      <span class="toc-text">${sanitizeText(row.title || '')}</span>
+      <span class="toc-page-number">${sanitizeText(row.pageNumber || '')}</span>
+    </a>
+  `;
+}
+
+function groupedTocHtml(tocPages) {
+  return tocPages
+    .map(
+      (columns, pageIndex) => `
+        <section class="book-page toc-page">
+          <div class="page-body toc-page-body ${pageIndex === 0 ? 'first' : 'continued'}">
+            ${pageIndex === 0 ? '<h1>Table of Contents</h1>' : '<div class="toc-spacer"></div>'}
+            <div class="toc-columns">
+              <div class="toc-column toc-column-right">
+                ${columns.right.map((row) => tocRowHtml(row)).join('')}
+              </div>
+              <div class="toc-column toc-column-left">
+                ${columns.left.map((row) => tocRowHtml(row)).join('')}
+              </div>
+            </div>
+          </div>
+          <footer class="page-number">${pageIndex + 1}</footer>
+        </section>
+      `
+    )
+    .join('');
+}
+
+function bookPagesHtml(songPages, tocPagesCount) {
+  return songPages
+    .map((page, index) => {
+      const pageNumber = tocPagesCount + index + 1;
+
+      if (page.layout === 'single') {
+        return `
+          <section class="book-page song-book-page">
+            ${songFlowPageHtml(page.song)}
+            <footer class="page-number">${pageNumber}</footer>
+          </section>
+        `;
+      }
+
+      return `
+        <section class="book-page song-book-page">
+          <div class="page-body page-spread">
+            <div class="page-column page-column-right">
+              ${page.columns.right ? songCardHtml(page.columns.right) : ''}
+            </div>
+            <div class="page-column page-column-left">
+              ${page.columns.left ? songCardHtml(page.columns.left) : ''}
+            </div>
+          </div>
+          <footer class="page-number">${pageNumber}</footer>
+        </section>
+      `;
+    })
+    .join('');
+}
+
+function buildMeasurementHtml(metrics) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Songbook Measurement</title>
+  <style>${buildStyles(metrics)}</style>
+</head>
+<body>
+  <div class="measure-stage">
+    <section id="measure-toc-page" class="book-page toc-page"></section>
+    <section id="measure-spread-page" class="book-page song-book-page"></section>
+    <section id="measure-flow-page" class="book-page song-book-page"></section>
+  </div>
+</body>
+</html>`;
+}
+
+async function measureSongLayouts(page, songs) {
+  return page.evaluate(
+    ({ songs, fontVariants }) => {
+      const EPSILON = 1;
+      const spreadRoot = document.getElementById('measure-spread-page');
+      const flowRoot = document.getElementById('measure-flow-page');
+
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) {
+          node.className = className;
+        }
+        if (text !== undefined) {
+          node.textContent = text;
+        }
+        return node;
+      }
+
+      function buildSongHeader(song) {
+        const meta = [song.album_title || 'Single', song.year || ''].filter(Boolean).join(' | ');
+        const header = element('header', 'song-header');
+        const main = element('div', 'song-header-main');
+        main.appendChild(element('h2', `song-title ${/[\u0590-\u05FF]/.test(song.title) ? 'rtl' : 'ltr'}`, song.title || ''));
+        main.appendChild(
+          element('p', `song-artist ${/[\u0590-\u05FF]/.test(song.artist_name) ? 'rtl' : 'ltr'}`, song.artist_name || 'Unknown Artist')
+        );
+        main.appendChild(element('p', `song-meta ${/[\u0590-\u05FF]/.test(meta) ? 'rtl' : 'ltr'}`, meta));
+        header.appendChild(main);
+        return header;
+      }
+
+      function buildTokenNode(token) {
+        if (token.type === 'spacer') {
+          return element('div', 'lyrics-spacer');
+        }
+
+        if (token.type === 'missing') {
+          return element('p', 'missing', token.text || 'Lyrics not available.');
+        }
+
+        return element('div', 'lyrics-line', token.text || '\u00A0');
+      }
+
+      function buildSongCard(song, fontClass, tokens) {
+        const article = element('article', `song-card ${song.isHebrew ? 'rtl' : 'ltr'} ${fontClass}`);
+        article.appendChild(buildSongHeader(song));
+        const lyrics = element('div', 'song-lyrics');
+        tokens.forEach((token) => lyrics.appendChild(buildTokenNode(token)));
+        article.appendChild(lyrics);
+        return article;
+      }
+
+      function buildFlowPane(song, fontClass, includeHeader) {
+        const pane = element('div', `flow-pane ${song.isHebrew ? 'rtl' : 'ltr'} ${fontClass}`);
+        if (includeHeader) {
+          pane.appendChild(buildSongHeader(song));
+        }
+        const lyrics = element('div', 'song-lyrics');
+        pane.appendChild(lyrics);
+        return { pane, lyrics };
+      }
+
+      function createSpreadPage() {
+        spreadRoot.innerHTML = '';
+        const body = element('div', 'page-body page-spread');
+        const right = element('div', 'page-column page-column-right');
+        const left = element('div', 'page-column page-column-left');
+        body.appendChild(right);
+        body.appendChild(left);
+        spreadRoot.appendChild(body);
+        spreadRoot.appendChild(element('footer', 'page-number', '1'));
+        return { right, left };
+      }
+
+      function createFlowPage(song, fontClass, startColumn) {
+        flowRoot.innerHTML = '';
+        const body = element('div', 'page-body');
+        const article = element('article', 'song-flow-page');
+        const startClass = startColumn === 'right' ? 'right' : 'left';
+        const continueClass = startClass === 'right' ? 'left' : 'right';
+
+        const startColumnElement = element('div', `flow-column flow-column-${startClass}`);
+        const continueColumnElement = element('div', `flow-column flow-column-${continueClass}`);
+        const startPane = buildFlowPane(song, fontClass, true);
+        const continuePane = buildFlowPane(song, fontClass, false);
+
+        startColumnElement.appendChild(startPane.pane);
+        continueColumnElement.appendChild(continuePane.pane);
+        article.appendChild(startColumnElement);
+        article.appendChild(continueColumnElement);
+        body.appendChild(article);
+        flowRoot.appendChild(body);
+        flowRoot.appendChild(element('footer', 'page-number', '1'));
+
+        return {
+          startColumnElement,
+          continueColumnElement,
+          startLyrics: startPane.lyrics,
+          continueLyrics: continuePane.lyrics,
+        };
+      }
+
+      function fits(container) {
+        return container.scrollHeight <= container.clientHeight + EPSILON;
+      }
+
+      return songs.map((song) => {
+        const startColumn = song.isHebrew ? 'right' : 'left';
+
+        for (const variant of fontVariants) {
+          const spreadPage = createSpreadPage();
+          const compactTarget = startColumn === 'right' ? spreadPage.right : spreadPage.left;
+          compactTarget.appendChild(buildSongCard(song, variant.className, song.tokens));
+
+          if (fits(compactTarget)) {
+            return {
+              mode: 'compact',
+              song,
+              fontClass: variant.className,
+              startColumn,
+              tokens: song.tokens,
+            };
+          }
+
+          const flowPage = createFlowPage(song, variant.className, startColumn);
+          const startTokens = [];
+          const continueTokens = [];
+          let inContinueColumn = false;
+          let failed = false;
+
+          for (const token of song.tokens) {
+            const node = buildTokenNode(token);
+
+            if (!inContinueColumn) {
+              flowPage.startLyrics.appendChild(node);
+
+              if (fits(flowPage.startColumnElement)) {
+                startTokens.push(token);
+                continue;
+              }
+
+              flowPage.startLyrics.removeChild(node);
+              inContinueColumn = true;
+            }
+
+            flowPage.continueLyrics.appendChild(node);
+
+            if (fits(flowPage.continueColumnElement)) {
+              continueTokens.push(token);
+              continue;
+            }
+
+            flowPage.continueLyrics.removeChild(node);
+            failed = true;
+            break;
+          }
+
+          if (!failed && startTokens.length > 0) {
+            return {
+              mode: 'flow',
+              song,
+              fontClass: variant.className,
+              startColumn,
+              startTokens,
+              continueTokens,
+            };
+          }
+        }
+
+        return {
+          mode: 'flow',
+          song,
+          fontClass: fontVariants[fontVariants.length - 1].className,
+          startColumn,
+          startTokens: song.tokens,
+          continueTokens: [],
+        };
+      });
+    },
+    {
+      songs,
+      fontVariants: FONT_VARIANTS,
+    }
+  );
+}
+
+async function measureTocPages(page, rows) {
+  return page.evaluate(({ rows }) => {
+    const EPSILON = 1;
+    const tocRoot = document.getElementById('measure-toc-page');
+
+    function element(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) {
+        node.className = className;
+      }
+      if (text !== undefined) {
+        node.textContent = text;
+      }
+      return node;
+    }
+
+    function createTocPage(isFirstPage) {
+      tocRoot.innerHTML = '';
+      const body = element('div', `page-body toc-page-body ${isFirstPage ? 'first' : 'continued'}`);
+      body.appendChild(isFirstPage ? element('h1', '', 'Table of Contents') : element('div', 'toc-spacer'));
+      const columns = element('div', 'toc-columns');
+      const right = element('div', 'toc-column toc-column-right');
+      const left = element('div', 'toc-column toc-column-left');
+      columns.appendChild(right);
+      columns.appendChild(left);
+      body.appendChild(columns);
+      tocRoot.appendChild(body);
+      tocRoot.appendChild(element('footer', 'page-number', isFirstPage ? '1' : '2'));
+      return { right, left };
+    }
+
+    function buildRowNode(row) {
+      if (row.type === 'heading') {
+        return element('div', `toc-heading ${row.direction}`, row.text);
+      }
+
+      const link = element('a', `toc-row ${row.direction}`);
+      link.setAttribute('href', `#song-${row.id}`);
+      link.appendChild(element('span', 'toc-text', row.title));
+      link.appendChild(element('span', 'toc-page-number', row.pageNumber));
+      return link;
+    }
+
+    function fits(container) {
+      return container.scrollHeight <= container.clientHeight + EPSILON;
+    }
+
+    const pages = [];
+    let current = createTocPage(true);
+    let currentRows = { right: [], left: [] };
+
+    for (const row of rows) {
+      let node = buildRowNode(row);
+      current.right.appendChild(node);
+
+      if (fits(current.right)) {
+        currentRows.right.push(row);
+        continue;
+      }
+
+      current.right.removeChild(node);
+      node = buildRowNode(row);
+      current.left.appendChild(node);
+
+      if (fits(current.left)) {
+        currentRows.left.push(row);
+        continue;
+      }
+
+      current.left.removeChild(node);
+      pages.push(currentRows);
+      current = createTocPage(false);
+      currentRows = { right: [], left: [] };
+      node = buildRowNode(row);
+      current.right.appendChild(node);
+      currentRows.right.push(row);
+    }
+
+    if (currentRows.right.length || currentRows.left.length || pages.length === 0) {
+      pages.push(currentRows);
+    }
+
+    return pages;
+  }, { rows });
+}
+
+async function resolveTocLayout(page, songs, songPages) {
+  let tocPages = [];
+  let tocPageCount = 0;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const pageNumbers = buildSongPageNumbers(songPages, tocPageCount);
+    const rows = buildTocRows(songs, pageNumbers);
+    const nextPages = await measureTocPages(page, rows);
+
+    tocPages = nextPages;
+
+    if (nextPages.length === tocPageCount) {
+      break;
+    }
+
+    tocPageCount = nextPages.length;
+  }
+
+  const finalPageNumbers = buildSongPageNumbers(songPages, tocPages.length);
+  const finalRows = buildTocRows(songs, finalPageNumbers);
+  return measureTocPages(page, finalRows);
+}
+
+function buildHtml(songPages, tocPages, metrics) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Songbook PDF</title>
+  <style>${buildStyles(metrics)}</style>
+</head>
+<body>
+  <div class="book">
+    ${metrics.includeToc ? groupedTocHtml(tocPages) : ''}
+    ${bookPagesHtml(songPages, tocPages.length)}
+  </div>
+</body>
+</html>`;
+}
+
+export async function generatePdf(inputSongs, config = {}) {
+  const songs = prepareSongs(inputSongs);
+  const metrics = getPageMetrics(config);
+
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.emulateMediaType('print');
+    await page.setContent(buildMeasurementHtml(metrics), { waitUntil: 'domcontentloaded' });
+
+    const songLayouts = await measureSongLayouts(page, songs);
+    const songPages = paginateSongLayouts(songLayouts, metrics.songsPerPage);
+    const tocPages = metrics.includeToc ? await resolveTocLayout(page, songs, songPages) : [];
+
+    await page.setContent(buildHtml(songPages, tocPages, metrics), { waitUntil: 'networkidle0' });
+
+    return await page.pdf({
+      format: metrics.format,
+      printBackground: true,
+      preferCSSPageSize: true,
+      displayHeaderFooter: false,
+      margin: {
+        top: '0mm',
+        right: '0mm',
+        bottom: '0mm',
+        left: '0mm',
+      },
+    });
+  } finally {
+    await browser.close();
+  }
+}
+
+============================================================
+
+FILE: backend/src/routes/print.js
+------------------------------------------------------------
+import { Router }     from 'express';
+import { getSongById, getSongs } from '../services/songService.js';
+import { getCollection }         from '../services/collectionsService.js';
+import { generatePdf }           from '../print/engine.js';
+
+const router = Router();
+
+function parseSongIds(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return null;
+  return ids.map(id => getSongById(id)).filter(Boolean);
+}
+
+function sortSongsForBook(songs = []) {
+  return [...songs].sort((a, b) => {
+    const artistCompare = String(a?.artist_name || '').localeCompare(String(b?.artist_name || ''));
+
+    if (artistCompare !== 0) {
+      return artistCompare;
+    }
+
+    return String(a?.title || '').localeCompare(String(b?.title || ''));
+  });
+}
+
+// POST /print/pdf
+// Body: { songIds?, collectionId?, filters?, config }
+router.post('/pdf', async (req, res) => {
+  try {
+    const payload =
+      typeof req.body?.payload === 'string'
+        ? JSON.parse(req.body.payload)
+        : req.body;
+    const { songIds, collectionId, config = {} } = payload || {};
+
+    let songs = [];
+
+    if (collectionId) {
+      const col = getCollection(collectionId);
+      songs = col?.songs?.map(s => getSongById(s.id)).filter(Boolean) || [];
+    } else if (songIds?.length) {
+      songs = parseSongIds(songIds) || [];
+    } else {
+      songs = getSongs({ limit: 2000, sort: 'artist' });
+    }
+
+    songs = sortSongsForBook(songs);
+
+    if (songs.length === 0)
+      return res.status(400).json({ error: 'No songs to print' });
+
+    const pdf = await generatePdf(songs, config);
+
+    res.set({
+      'Content-Type':        'application/pdf',
+      'Content-Disposition': `inline; filename="songbook.pdf"`,
+      'Content-Length':      pdf.length,
+    });
+    res.end(pdf);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+export default router;
+
+============================================================
+
+FILE: frontend/src/api/client.js
+------------------------------------------------------------
+const BASE = import.meta.env.VITE_API_URL?.trim() || 'http://127.0.0.1:3001/api';
+
+async function request(path, options = {}) {
+  const isFormData =
+    typeof FormData !== 'undefined' && options.body instanceof FormData;
+
+  const res = await fetch(`${BASE}${path}`, {
+    credentials: 'include',
+    ...options,
+    headers: {
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(options.headers || {}),
+    },
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+
+  if (res.status === 204) {
+    return null;
+  }
+
+  return res.json();
+}
+
+export const api = {
+  getSongs: (params = {}) =>
+    request(
+      '/songs?' +
+        new URLSearchParams(
+          Object.fromEntries(
+            Object.entries(params).filter(
+              ([, value]) => value !== undefined && value !== ''
+            )
+          )
+        ).toString()
+    ),
+
+  getSong: (id) => request(`/songs/${id}`),
+
+  getSongsByIds: (ids) =>
+    request(
+      '/songs?' +
+        new URLSearchParams({
+          ids: (Array.isArray(ids) ? ids : []).filter(Boolean).join(','),
+          limit: String((Array.isArray(ids) ? ids.length : 0) || 1),
+        }).toString()
+    ),
+
+  createSong: (data) =>
+    request('/songs', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateSong: (id, data) =>
+    request(`/songs/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteSong: (id) =>
+    request(`/songs/${id}`, {
+      method: 'DELETE',
+    }),
+
+  saveLyrics: (id, data) =>
+    request(`/songs/${id}/lyrics`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  fetchLyrics: (id) =>
+    request(`/songs/${id}/fetch-lyrics`, {
+      method: 'POST',
+    }),
+
+  startLyricsRunJob: (ids) =>
+    request('/songs/fetch-lyrics-run/background', {
+      method: 'POST',
+      keepalive: true,
+      body: JSON.stringify({ ids }),
+    }),
+
+  setTags: (id, tags) =>
+    request(`/songs/${id}/tags`, {
+      method: 'PUT',
+      body: JSON.stringify({ tags }),
+    }),
+
+  bulkUpdate: (ids, data) =>
+    request('/songs/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ ids, data }),
+    }),
+
+  getDuplicates: () => request('/songs/duplicates'),
+
+  mergeSongs: (data) =>
+    request('/songs/merge', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  startPlaylistImportJob: (playlistId) =>
+    request('/spotify/import/playlist/background', {
+      method: 'POST',
+      keepalive: true,
+      body: JSON.stringify({ playlistId }),
+    }),
+
+  startAlbumImportJob: (albumId) =>
+    request('/spotify/import/album/background', {
+      method: 'POST',
+      keepalive: true,
+      body: JSON.stringify({ albumId }),
+    }),
+  getSpotifyStatus: () => request('/spotify/status'),
+
+  getSpotifyMe: () => request('/spotify/me'),
+
+  logoutSpotify: () =>
+    request('/spotify/logout', {
+      method: 'POST',
+    }),
+
+  getCollections: () => request('/collections'),
+
+  getCollection: (id) => request(`/collections/${id}`),
+
+  createCollection: (name, description) =>
+    request('/collections', {
+      method: 'POST',
+      body: JSON.stringify({ name, description }),
+    }),
+
+  deleteCollection: (id) =>
+    request(`/collections/${id}`, {
+      method: 'DELETE',
+    }),
+
+  addToCollection: (collectionId, songId) =>
+    request(`/collections/${collectionId}/songs`, {
+      method: 'POST',
+      body: JSON.stringify({ songId }),
+    }),
+
+  removeFromCollection: (collectionId, songId) =>
+    request(`/collections/${collectionId}/songs/${songId}`, {
+      method: 'DELETE',
+    }),
+
+  getPlaylists: () => request('/playlists'),
+
+  getPlaylist: (id) => request(`/playlists/${id}`),
+
+  importCsv: (file) => {
+    const form = new FormData();
+    form.append('file', file);
+
+    return request('/import/csv', {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  importJson: (records) =>
+    request('/import/json', {
+      method: 'POST',
+      body: JSON.stringify(records),
+    }),
+
+  getReports: (params = {}) =>
+    request(
+      '/reports?' +
+        new URLSearchParams(
+          Object.fromEntries(
+            Object.entries(params).filter(
+              ([, value]) => value !== undefined && value !== ''
+            )
+          )
+        ).toString()
+    ),
+
+  getReport: (id) => request(`/reports/${id}`),
+
+  resetReports: (body = { includeLegacy: true }) =>
+    request('/reports/reset', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  getLyricsProviderStats: () => request('/reports/provider-stats/lyrics'),
+
+  getJobs: () => request('/jobs'),
+
+  getJob: (id) => request(`/jobs/${id}`),
+
+  printPdf: async (body) => {
+    const targetName = `shir_on_print_${Date.now()}`;
+    const previewWindow =
+      typeof window !== 'undefined'
+        ? window.open('', targetName)
+        : null;
+
+    if (!previewWindow) {
+      throw new Error('Popup blocked. Please allow a new tab for printing.');
+    }
+
+    previewWindow.document.open();
+    previewWindow.document.write(
+      '<!doctype html><html><head><title>Preparing PDF...</title></head><body style="font-family: sans-serif; padding: 24px;">Preparing PDF...</body></html>'
+    );
+    previewWindow.document.close();
+
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `${BASE}/print/pdf`;
+    form.target = targetName;
+    form.style.display = 'none';
+
+    const payload = document.createElement('input');
+    payload.type = 'hidden';
+    payload.name = 'payload';
+    payload.value = JSON.stringify(body || {});
+    form.appendChild(payload);
+
+    document.body.appendChild(form);
+
+    try {
+      form.submit();
+      return { ok: true };
+    } finally {
+      document.body.removeChild(form);
+    }
+  },
+};
+
+export { BASE };
+
+============================================================
+
+FILE: frontend/src/pages/SongbookPage.jsx
+------------------------------------------------------------
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { api } from '../api/client.js';
+
+function isHebrewText(value = '') {
+  return /[\u0590-\u05FF]/.test(String(value || ''));
+}
+
+function groupSongsByArtist(songs) {
+  const groups = new Map();
+
+  for (const song of songs) {
+    const key = song.artist_name || 'Unknown Artist';
+
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+
+    groups.get(key).push(song);
+  }
+
+  return [...groups.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([artist, artistSongs]) => ({
+      artist,
+      songs: [...artistSongs].sort((a, b) => (a.title || '').localeCompare(b.title || '')),
+    }));
+}
+
+export default function SongbookPage() {
+  const [songs, setSongs] = useState([]);
+  const [playlists, setPlaylists] = useState([]);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPlaylists() {
+      try {
+        const data = await api.getPlaylists();
+
+        if (!cancelled) {
+          setPlaylists(Array.isArray(data) ? data : []);
+        }
+      } catch {
+        if (!cancelled) {
+          setPlaylists([]);
+        }
+      }
+    }
+
+    loadPlaylists();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError('');
+
+      try {
+        const data = await api.getSongs({
+          limit: 2000,
+          sort: 'artist',
+          playlistId: selectedPlaylistId,
+          status: 'has_lyrics',
+        });
+
+        if (!cancelled) {
+          setSongs(Array.isArray(data) ? data : []);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e?.message || 'Failed to load songbook');
+          setSongs([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPlaylistId]);
+
+  const artistGroups = useMemo(() => groupSongsByArtist(songs), [songs]);
+  const selectedPlaylistName = useMemo(() => {
+    if (!selectedPlaylistId) {
+      return 'All songs';
+    }
+
+    return playlists.find((playlist) => playlist.id === selectedPlaylistId)?.name || 'Selected playlist';
+  }, [playlists, selectedPlaylistId]);
+
+  async function printSongbook() {
+    setError('');
+    setInfo('');
+
+    try {
+      const songIds = songs.map((song) => song.id).filter(Boolean);
+
+      if (songIds.length === 0) {
+        setInfo('No songs in the current songbook scope.');
+        return;
+      }
+
+      await api.printPdf({
+        songIds,
+        config: {
+          format: 'A4',
+          includeToc: true,
+          songsPerPage: 2,
+        },
+      });
+
+      setInfo(`Opened print preview for ${songIds.length} song(s).`);
+    } catch (e) {
+      setError(e?.message || 'Failed to print songbook');
+    }
+  }
+
+  return (
+    <div style={styles.page}>
+      <header style={styles.header}>
+        <div>
+          <h1 style={styles.title}>Digital Songbook</h1>
+          <p style={styles.subTitle}>
+            {selectedPlaylistName} | {songs.length} song(s) | {artistGroups.length} artist group(s)
+          </p>
+        </div>
+
+        <div style={styles.headerActions}>
+          <button type="button" style={styles.primaryBtn} onClick={printSongbook}>
+            Print Songbook
+          </button>
+          <label style={styles.filterField}>
+            <select
+              value={selectedPlaylistId}
+              onChange={(e) => setSelectedPlaylistId(e.target.value)}
+              style={styles.select}
+            >
+              <option value="">All songs</option>
+              {playlists.map((playlist) => (
+                <option key={playlist.id} value={playlist.id}>
+                  {playlist.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </header>
+
+      {loading && <p style={styles.info}>Loading songbook...</p>}
+      {error && <p style={styles.error}>{error}</p>}
+      {info && <p style={styles.info}>{info}</p>}
+
+      {!loading && !error && (
+        <div style={styles.layout}>
+          <aside style={styles.toc}>
+            <div style={styles.tocCard}>
+              <strong style={styles.tocTitle}>Table of Contents</strong>
+              <p style={styles.tocHint}>
+                {selectedPlaylistName} | {songs.length} songs
+              </p>
+
+              {artistGroups.map((group) => (
+                <div key={group.artist} style={styles.tocGroup}>
+                  <div style={styles.tocArtist}>{group.artist}</div>
+                  {group.songs.map((song) => (
+                    <a key={song.id} href={`#song-${song.id}`} style={styles.tocLink}>
+                      {song.title}
+                    </a>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </aside>
+
+          <main style={styles.book}>
+            {artistGroups.map((group) => (
+              <section key={group.artist} style={styles.artistSection}>
+                <h2 style={styles.artistHeading}>{group.artist}</h2>
+
+                {group.songs.map((song) => {
+                  const rtl = isHebrewText(song.title) || isHebrewText(song.lyrics?.text);
+                  const metaParts = [song.album_title || 'Single', song.year || ''].filter(Boolean);
+                  const headerTextStyle = {
+                    direction: rtl ? 'rtl' : 'ltr',
+                    textAlign: rtl ? 'right' : 'left',
+                  };
+
+                  return (
+                    <article
+                      key={song.id}
+                      id={`song-${song.id}`}
+                      style={styles.songCard}
+                    >
+                      <div
+                        style={{
+                          ...styles.songHeader,
+                          flexDirection: rtl ? 'row-reverse' : 'row',
+                        }}
+                      >
+                        <div
+                          style={{
+                            ...styles.songHeaderMain,
+                            ...headerTextStyle,
+                          }}
+                        >
+                          <h3 style={styles.songTitle}>
+                            {song.title}
+                          </h3>
+                          <p style={styles.songArtist}>
+                            {song.artist_name || 'Unknown Artist'}
+                          </p>
+                          <p style={styles.songMeta}>
+                            {metaParts.join(' | ')}
+                          </p>
+                        </div>
+
+                        <Link to={`/songs/${song.id}`} style={styles.openLink}>
+                          Open
+                        </Link>
+                      </div>
+
+                      <div
+                        style={{
+                          ...styles.lyrics,
+                          direction: rtl ? 'rtl' : 'ltr',
+                          textAlign: rtl ? 'right' : 'left',
+                        }}
+                      >
+                        {song.lyrics?.text ? (
+                          song.lyrics.text
+                        ) : (
+                          <span style={styles.missing}>Lyrics not available yet.</span>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </section>
+            ))}
+
+            {!artistGroups.length && (
+              <p style={styles.info}>No songs match the current reading mode.</p>
+            )}
+          </main>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const styles = {
+  page: {
+    maxWidth: 1440,
+    margin: '0 auto',
+    padding: '28px 20px 48px',
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 16,
+    marginBottom: 24,
+    flexWrap: 'wrap',
+  },
+  title: {
+    margin: '0 0 8px',
+    fontSize: 42,
+    color: '#2c241b',
+  },
+  subTitle: {
+    margin: 0,
+    color: '#6b6053',
+    lineHeight: 1.6,
+  },
+  headerActions: {
+    display: 'flex',
+    gap: 12,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    alignItems: 'flex-start',
+  },
+  filterField: {
+    display: 'grid',
+    gap: 6,
+  },
+  filterLabel: {
+    color: '#7d6c58',
+    fontSize: 12,
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+  },
+  select: {
+    minWidth: 220,
+    padding: '10px 14px',
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.22)',
+    background: '#fff',
+    color: '#3b332a',
+  },
+  primaryBtn: {
+    padding: '10px 16px',
+    borderRadius: 999,
+    border: 'none',
+    background: '#2f6b5f',
+    color: '#fff',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  layout: {
+    display: 'grid',
+    gridTemplateColumns: '280px minmax(0, 1fr)',
+    gap: 24,
+    alignItems: 'start',
+  },
+  toc: {
+    position: 'sticky',
+    top: 96,
+  },
+  tocCard: {
+    background: '#fffdf8',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 18,
+    padding: 18,
+    maxHeight: 'calc(100vh - 130px)',
+    overflowY: 'auto',
+  },
+  tocTitle: {
+    display: 'block',
+    color: '#2f281f',
+    fontSize: 16,
+    marginBottom: 4,
+  },
+  tocHint: {
+    margin: '0 0 16px',
+    color: '#847564',
+    fontSize: 13,
+  },
+  tocGroup: {
+    marginBottom: 16,
+    display: 'grid',
+    gap: 6,
+  },
+  tocArtist: {
+    fontWeight: 700,
+    color: '#44382b',
+    fontSize: 13,
+  },
+  tocLink: {
+    color: '#5a4d3f',
+    textDecoration: 'none',
+    fontSize: 13,
+  },
+  book: {
+    display: 'grid',
+    gap: 24,
+  },
+  artistSection: {
+    display: 'grid',
+    gap: 14,
+  },
+  artistHeading: {
+    margin: 0,
+    paddingBottom: 10,
+    borderBottom: '1px solid rgba(114, 98, 78, 0.18)',
+    color: '#2f261c',
+    fontSize: 26,
+  },
+  songCard: {
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 18,
+    padding: 20,
+    boxShadow: '0 14px 30px rgba(77, 60, 35, 0.06)',
+  },
+  songHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'flex-start',
+    marginBottom: 14,
+  },
+  songHeaderMain: {
+    display: 'grid',
+    gap: 4,
+    flex: 1,
+    minWidth: 0,
+  },
+  songTitle: {
+    margin: 0,
+    fontSize: 24,
+    color: '#241d15',
+  },
+  songArtist: {
+    margin: 0,
+    color: '#4d4236',
+    fontSize: 15,
+    fontWeight: 700,
+  },
+  songMeta: {
+    margin: 0,
+    color: '#7e6f5c',
+    fontSize: 13,
+  },
+  openLink: {
+    textDecoration: 'none',
+    color: '#2f6b5f',
+    fontWeight: 700,
+    whiteSpace: 'nowrap',
+  },
+  lyrics: {
+    whiteSpace: 'pre-wrap',
+    lineHeight: 1.95,
+    fontSize: 17,
+    color: '#2f271e',
+  },
+  missing: {
+    color: '#8a7c6e',
+    fontStyle: 'italic',
+  },
+  info: {
+    color: '#6b6053',
+  },
+  error: {
+    color: '#c0392b',
+    fontWeight: 600,
+  },
+};
+
+============================================================
+
+FILE: frontend/src/pages/Library.jsx
+------------------------------------------------------------
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../api/client.js';
+import FilterBar from '../components/FilterBar.jsx';
+import SongTable from '../components/SongTable.jsx';
+
+const FETCH_LIMIT = 1000;
+
+function getPlaylistScope(playlists, playlistId) {
+  if (!playlistId) {
+    return {
+      title: 'Library',
+      description: 'Entire library',
+    };
+  }
+
+  const playlist = playlists.find((entry) => entry.id === playlistId);
+
+  return {
+    title: playlist?.name || 'Selected Playlist',
+    description: `${playlist?.songs_count || 0} linked song(s)`,
+  };
+}
+
+export default function Library() {
+  const navigate = useNavigate();
+
+  const [songs, setSongs] = useState([]);
+  const [filters, setFilters] = useState({ sort: 'artist' });
+  const [selected, setSelected] = useState(new Set());
+  const [playlists, setPlaylists] = useState([]);
+  const [playlistId, setPlaylistId] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+
+  const scope = useMemo(() => getPlaylistScope(playlists, playlistId), [playlists, playlistId]);
+  const summary = useMemo(() => {
+    const withLyrics = songs.filter((song) => song.lyrics_status && song.lyrics_status !== 'missing').length;
+    const missingLyrics = songs.filter((song) => (song.lyrics_status || 'missing') === 'missing').length;
+    const artistCount = new Set(songs.map((song) => song.artist_name || 'Unknown Artist')).size;
+
+    return {
+      total: songs.length,
+      withLyrics,
+      missingLyrics,
+      artistCount,
+    };
+  }, [songs]);
+
+  const loadSongs = useCallback(async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      const data = await api.getSongs({
+        ...filters,
+        playlistId,
+        limit: FETCH_LIMIT,
+        page: 1,
+      });
+
+      setSongs(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setError(e?.message || 'Failed to load songs');
+      setSongs([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [filters, playlistId]);
+
+  const loadPlaylists = useCallback(async () => {
+    try {
+      const data = await api.getPlaylists();
+      setPlaylists(Array.isArray(data) ? data : []);
+    } catch {
+      setPlaylists([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSongs();
+  }, [loadSongs]);
+
+  useEffect(() => {
+    loadPlaylists();
+  }, [loadPlaylists]);
+
+  async function deleteSelected() {
+    if (!selected.size || bulkBusy) {
+      return;
+    }
+
+    if (!window.confirm(`Delete ${selected.size} songs?`)) {
+      return;
+    }
+
+    setBulkBusy(true);
+    setError('');
+    setInfo('');
+
+    try {
+      for (const id of selected) {
+        await api.deleteSong(id);
+      }
+
+      setInfo(`Deleted ${selected.size} song(s).`);
+      setSelected(new Set());
+      await loadSongs();
+    } catch (e) {
+      setError(e?.message || 'Delete failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function printSelected() {
+    setError('');
+    setInfo('');
+
+    try {
+      const targetIds = selected.size ? [...selected] : songs.map((song) => song.id);
+
+      if (targetIds.length === 0) {
+        setInfo('No visible songs to print.');
+        return;
+      }
+
+      await api.printPdf({
+        songIds: targetIds,
+        config: {
+          format: 'A4',
+          includeToc: true,
+          songsPerPage: 2,
+        },
+      });
+
+      setInfo(
+        selected.size
+          ? `Opened print preview for ${targetIds.length} selected song(s).`
+          : `Opened print preview for ${targetIds.length} visible song(s).`
+      );
+    } catch (e) {
+      setError(e?.message || 'Print failed');
+    }
+  }
+
+  function openLyricsRun() {
+    const ids = selected.size ? [...selected] : songs.map((song) => song.id);
+    navigate(`/lyrics-run?ids=${ids.join(',')}`);
+  }
+
+  return (
+    <div style={styles.page}>
+      <header style={styles.header}>
+        <div style={styles.headerCopy}>
+          <h1 style={styles.title}>{scope.title}</h1>
+          <p style={styles.subTitle}>
+            {scope.description} | {songs.length} visible song(s)
+            {songs.length >= FETCH_LIMIT ? ` (capped at ${FETCH_LIMIT})` : ''}
+          </p>
+        </div>
+
+        <div style={styles.headerActions}>
+          <button type="button" style={styles.primaryBtn} onClick={printSelected}>
+            {selected.size ? 'Print Selected' : 'Print Visible'}
+          </button>
+          <button type="button" style={styles.secondaryBtn} onClick={openLyricsRun}>
+            {selected.size ? 'Fetch Lyrics for Selected' : 'Fetch Lyrics for Visible'}
+          </button>
+        </div>
+      </header>
+
+      <div style={styles.scopeBar}>
+        <label style={styles.scopeLabel}>
+          Playlist
+          <select
+            value={playlistId}
+            onChange={(e) => {
+              setPlaylistId(e.target.value);
+              setSelected(new Set());
+            }}
+            style={styles.scopeSelect}
+          >
+            <option value="">All songs</option>
+            {playlists.map((playlist) => (
+              <option key={playlist.id} value={playlist.id}>
+                {playlist.name} ({playlist.songs_count || 0})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div style={styles.scopeStats}>
+          <span style={styles.scopeChip}>{summary.total} visible</span>
+          <span style={styles.scopeChip}>{summary.artistCount} artists</span>
+          <span style={styles.scopeChip}>{summary.withLyrics} with lyrics</span>
+          <span style={styles.scopeChip}>{summary.missingLyrics} missing</span>
+        </div>
+      </div>
+
+      <FilterBar
+        filters={filters}
+        onChange={(nextFilters) => {
+          setFilters(nextFilters || {});
+          setSelected(new Set());
+          setInfo('');
+          setError('');
+        }}
+      />
+
+      <div style={styles.actionBar}>
+        <strong>{selected.size} selected</strong>
+
+        <button type="button" style={styles.bulkBtn} onClick={deleteSelected} disabled={bulkBusy || !selected.size}>
+          Delete Selected
+        </button>
+      </div>
+
+      {error && <p style={styles.error}>{error}</p>}
+      {info && <p style={styles.info}>{info}</p>}
+      {(loading || bulkBusy) && <p style={styles.loading}>Loading...</p>}
+
+      {!loading && songs.length === 0 && (
+        <p style={styles.empty}>No songs match the current library scope.</p>
+      )}
+
+      <SongTable
+        songs={songs}
+        selected={selected}
+        onSelect={setSelected}
+        onOpen={(id) => navigate(`/songs/${id}`)}
+        groupByArtist={filters.sort !== 'title'}
+      />
+    </div>
+  );
+}
+
+const styles = {
+  page: {
+    maxWidth: 1280,
+    margin: '0 auto',
+    padding: '28px 20px 48px',
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 16,
+    marginBottom: 22,
+    flexWrap: 'wrap',
+  },
+  headerCopy: {
+    maxWidth: 760,
+    textAlign: 'left',
+  },
+  headerActions: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  },
+  title: {
+    margin: '0 0 8px',
+    fontSize: 40,
+    color: '#2c241b',
+  },
+  subTitle: {
+    margin: 0,
+    color: '#6b6053',
+    lineHeight: 1.6,
+  },
+  primaryBtn: {
+    padding: '10px 16px',
+    borderRadius: 999,
+    border: 'none',
+    background: '#2f6b5f',
+    color: '#fff',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  secondaryBtn: {
+    padding: '10px 14px',
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.22)',
+    background: '#fff',
+    color: '#3b332a',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  scopeBar: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 16,
+    flexWrap: 'wrap',
+    padding: '14px 16px',
+    borderRadius: 18,
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    marginBottom: 14,
+  },
+  scopeLabel: {
+    display: 'grid',
+    gap: 6,
+    color: '#53493d',
+    fontWeight: 700,
+  },
+  scopeSelect: {
+    minWidth: 240,
+    padding: '9px 12px',
+    borderRadius: 12,
+    border: '1px solid #d2c7b7',
+    background: '#fff',
+  },
+  scopeStats: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  scopeChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '8px 12px',
+    borderRadius: 999,
+    background: '#f5efe4',
+    color: '#5f5040',
+    fontWeight: 700,
+    fontSize: 13,
+  },
+  actionBar: {
+    display: 'flex',
+    gap: 8,
+    alignItems: 'center',
+    padding: '12px 14px',
+    background: '#f7f2e8',
+    border: '1px solid rgba(114, 98, 78, 0.14)',
+    borderRadius: 16,
+    marginBottom: 12,
+    flexWrap: 'wrap',
+    color: '#4a3f31',
+  },
+  bulkBtn: {
+    padding: '8px 12px',
+    background: '#fff',
+    border: '1px solid #d0d8d2',
+    borderRadius: 999,
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 700,
+    color: '#32443d',
+  },
+  error: {
+    color: '#c0392b',
+    fontWeight: 600,
+  },
+  info: {
+    color: '#1f618d',
+    fontWeight: 600,
+  },
+  loading: {
+    color: '#6b6053',
+  },
+  empty: {
+    color: '#6b6053',
+    marginTop: 40,
+    textAlign: 'center',
+  },
+};
+
+============================================================
+
+FILE: frontend/src/pages/SongPage.jsx
+------------------------------------------------------------
+import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { api } from '../api/client.js';
+
+function isProbablyHebrew(text) {
+  return /[\u0590-\u05FF]/.test(String(text || ''));
+}
+
+function parseTags(value) {
+  return String(value || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function buildYearOptions() {
+  return Array.from(
+    { length: new Date().getFullYear() - 1899 },
+    (_, index) => String(new Date().getFullYear() - index)
+  );
+}
+
+export default function SongPage() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const isNew = id === 'new';
+
+  const [song, setSong] = useState(null);
+  const [form, setForm] = useState({
+    title: '',
+    artist: '',
+    album: '',
+    year: '',
+  });
+  const [lyrics, setLyrics] = useState('');
+  const [tagsText, setTagsText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(!isNew);
+  const [msg, setMsg] = useState('');
+  const [error, setError] = useState('');
+  const [lastReportId, setLastReportId] = useState('');
+
+  const isHebrew = useMemo(
+    () => isProbablyHebrew(form.title) || isProbablyHebrew(lyrics),
+    [form.title, lyrics]
+  );
+  const yearOptions = useMemo(() => buildYearOptions(), []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSong() {
+      if (isNew) {
+        setSong(null);
+        setForm({
+          title: '',
+          artist: '',
+          album: '',
+          year: '',
+        });
+        setLyrics('');
+        setTagsText('');
+        setLoading(false);
+        setError('');
+        return;
+      }
+
+      setLoading(true);
+      setError('');
+      setMsg('');
+
+      try {
+        const loadedSong = await api.getSong(id);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (!loadedSong) {
+          setError('Song not found');
+          setSong(null);
+          return;
+        }
+
+        setSong(loadedSong);
+        setForm({
+          title: loadedSong.title || '',
+          artist: loadedSong.artist_name || '',
+          album: loadedSong.album_title || '',
+          year: loadedSong.year || '',
+        });
+        setLyrics(loadedSong.lyrics?.text || '');
+        setTagsText(Array.isArray(loadedSong.tags) ? loadedSong.tags.join(', ') : '');
+      } catch (e) {
+        if (!cancelled) {
+          setError(e?.message || 'Failed to load song');
+          setSong(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadSong();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id, isNew]);
+
+  async function save() {
+    setSaving(true);
+    setMsg('');
+    setError('');
+
+    try {
+      if (isNew) {
+        const created = await api.createSong(form);
+
+        if (lyrics.trim()) {
+          await api.saveLyrics(created.id, { text: lyrics });
+        }
+
+        if (parseTags(tagsText).length > 0) {
+          await api.setTags(created.id, parseTags(tagsText));
+        }
+
+        navigate(`/songs/${created.id}`);
+        return;
+      }
+
+      await api.updateSong(id, form);
+
+      if (lyrics !== (song?.lyrics?.text || '')) {
+        await api.saveLyrics(id, { text: lyrics });
+      }
+
+      if (tagsText !== (Array.isArray(song?.tags) ? song.tags.join(', ') : '')) {
+        await api.setTags(id, parseTags(tagsText));
+      }
+
+      const updated = await api.getSong(id);
+      setSong(updated);
+      setLyrics(updated?.lyrics?.text || lyrics);
+      setTagsText(Array.isArray(updated?.tags) ? updated.tags.join(', ') : tagsText);
+      setMsg('Song saved.');
+    } catch (e) {
+      setError(e?.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function fetchLyrics() {
+    setSaving(true);
+    setMsg('Fetching lyrics...');
+    setError('');
+    setLastReportId('');
+
+    try {
+      const result = await api.fetchLyrics(id);
+
+      if (result?.fetched) {
+        setLyrics(result.song?.lyrics?.text || '');
+        setSong(result.song || null);
+        setMsg('Lyrics fetched.');
+      } else {
+        setMsg('No lyrics found by any provider.');
+      }
+
+      if (result?.report_id) {
+        setLastReportId(result.report_id);
+      }
+    } catch (e) {
+      setError(e?.message || 'Lyrics fetch failed');
+      setMsg('');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div style={styles.page}>
+        <p style={styles.info}>Loading song...</p>
+      </div>
+    );
+  }
+
+  if (!isNew && error && !song) {
+    return (
+      <div style={styles.page}>
+        <p style={styles.error}>{error}</p>
+      </div>
+    );
+  }
+
+  const artistName = song?.artist_name || form.artist || '-';
+  const albumName = song?.album_title || form.album || 'Single';
+  const metaParts = [albumName, form.year || song?.year || ''].filter(Boolean);
+
+  return (
+    <div style={styles.page}>
+      <header style={styles.header}>
+        <div>
+          <p style={styles.eyebrow}>{isNew ? 'Library / New Song' : 'Library / Song'}</p>
+          <h1
+            style={{
+              ...styles.title,
+              direction: isHebrew ? 'rtl' : 'ltr',
+              textAlign: isHebrew ? 'right' : 'left',
+            }}
+          >
+            {isNew ? 'New Song' : song?.title || 'Song'}
+          </h1>
+          <p style={styles.subTitle}>
+            {artistName} {metaParts.length ? `| ${metaParts.join(' | ')}` : ''}
+          </p>
+        </div>
+
+      </header>
+
+      {msg && <p style={styles.success}>{msg}</p>}
+      {error && <p style={styles.error}>{error}</p>}
+
+      <div style={styles.layout}>
+        <section style={styles.editorCard}>
+          <div style={styles.sectionHeader}>
+            <div>
+              <h2 style={styles.sectionTitle}>Song Details</h2>
+              <p style={styles.sectionHint}>Edit the core metadata stored in the library.</p>
+            </div>
+          </div>
+
+          <div style={styles.formGrid}>
+            {[
+              ['Title', 'title', 'text'],
+              ['Artist', 'artist', 'text'],
+              ['Album', 'album', 'text'],
+              ['Year', 'year', 'text'],
+            ].map(([label, key, type]) => (
+              <label key={key} style={styles.label}>
+                <span style={styles.labelText}>{label}</span>
+                <input
+                  style={styles.input}
+                  type={type}
+                  inputMode={key === 'year' ? 'numeric' : undefined}
+                  list={key === 'year' ? 'song-year-options' : undefined}
+                  value={form[key] || ''}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      [key]: e.target.value,
+                    }))
+                  }
+              />
+            </label>
+          ))}
+
+            <datalist id="song-year-options">
+              {yearOptions.map((year) => (
+                <option key={year} value={year} />
+              ))}
+            </datalist>
+
+            <label style={styles.labelWide}>
+              <span style={styles.labelText}>Tags</span>
+              <input
+                style={styles.input}
+                type="text"
+                value={tagsText}
+                onChange={(e) => setTagsText(e.target.value)}
+                placeholder="Comma-separated tags"
+              />
+            </label>
+          </div>
+        </section>
+
+        <aside style={styles.sidebarCard}>
+          <h2 style={styles.sectionTitle}>Actions</h2>
+          <div style={styles.actionStack}>
+            <button type="button" style={styles.primaryBtn} onClick={save} disabled={saving}>
+              {saving ? 'Saving...' : 'Save Song'}
+            </button>
+
+            {!isNew && (
+              <>
+                <button type="button" style={styles.secondaryBtn} onClick={fetchLyrics} disabled={saving}>
+                  Fetch Lyrics Now
+                </button>
+                <button
+                  type="button"
+                  style={styles.secondaryBtn}
+                  onClick={() =>
+                    api.printPdf({
+                      songIds: [id],
+                      config: {
+                        format: 'A4',
+                        songsPerPage: 1,
+                        layout: 'fit-one-page-two-columns',
+                        includeToc: false,
+                      },
+                    })
+                  }
+                  disabled={saving}
+                >
+                  Print This Song
+                </button>
+                {song?.spotify_url && (
+                  <a
+                    href={song.spotify_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={styles.linkButton}
+                  >
+                    Open in Spotify
+                  </a>
+                )}
+                {lastReportId && (
+                  <button
+                    type="button"
+                    style={styles.secondaryBtn}
+                    onClick={() => navigate(`/reports/${lastReportId}`)}
+                  >
+                    View Fetch Report
+                  </button>
+                )}
+                <button
+                  type="button"
+                  style={styles.secondaryBtn}
+                  onClick={() => navigate('/reports')}
+                >
+                  Open Reports
+                </button>
+              </>
+            )}
+          </div>
+        </aside>
+      </div>
+
+      <section style={styles.lyricsCard}>
+        <div style={styles.sectionHeader}>
+          <div>
+            <h2 style={styles.sectionTitle}>Lyrics</h2>
+            <p style={styles.sectionHint}>Paste text manually or refine what the fetch flow brings in.</p>
+          </div>
+        </div>
+
+        <label style={styles.lyricsLabel}>
+          <textarea
+            dir={isHebrew ? 'rtl' : 'ltr'}
+            style={{
+              ...styles.textarea,
+              direction: isHebrew ? 'rtl' : 'ltr',
+              textAlign: isHebrew ? 'right' : 'left',
+            }}
+            value={lyrics}
+            onChange={(e) => setLyrics(e.target.value)}
+            placeholder="Paste or type lyrics here..."
+          />
+        </label>
+      </section>
+    </div>
+  );
+}
+
+const styles = {
+  page: {
+    maxWidth: 1240,
+    margin: '0 auto',
+    padding: '28px 20px 48px',
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 16,
+    marginBottom: 20,
+    flexWrap: 'wrap',
+  },
+  eyebrow: {
+    margin: 0,
+    color: '#8a6f3f',
+    textTransform: 'uppercase',
+    letterSpacing: '0.12em',
+    fontSize: 12,
+    fontWeight: 700,
+  },
+  title: {
+    margin: '6px 0 8px',
+    fontSize: 38,
+    color: '#2c241b',
+  },
+  subTitle: {
+    margin: 0,
+    color: '#6b6053',
+    lineHeight: 1.6,
+  },
+  headerActions: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  },
+  layout: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gap: 18,
+    alignItems: 'start',
+    marginBottom: 18,
+  },
+  editorCard: {
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 20,
+    padding: 20,
+    boxShadow: '0 14px 30px rgba(77, 60, 35, 0.05)',
+  },
+  sidebarCard: {
+    background: '#fffdf8',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 20,
+    padding: 20,
+  },
+  lyricsCard: {
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 20,
+    padding: 20,
+    boxShadow: '0 14px 30px rgba(77, 60, 35, 0.05)',
+  },
+  sectionHeader: {
+    marginBottom: 14,
+  },
+  sectionTitle: {
+    margin: 0,
+    color: '#2f261c',
+  },
+  sectionHint: {
+    margin: '6px 0 0',
+    color: '#7c6d5d',
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+  formGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: 14,
+  },
+  label: {
+    display: 'grid',
+    gap: 6,
+  },
+  labelWide: {
+    display: 'grid',
+    gap: 6,
+    gridColumn: '1 / -1',
+  },
+  labelText: {
+    color: '#6a5d4f',
+    fontSize: 13,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+  },
+  input: {
+    width: '100%',
+    padding: '11px 14px',
+    borderRadius: 14,
+    border: '1px solid rgba(114, 98, 78, 0.2)',
+    background: '#fff',
+    color: '#2f261c',
+    fontFamily: 'inherit',
+  },
+  lyricsLabel: {
+    display: 'block',
+  },
+  textarea: {
+    display: 'block',
+    width: '100%',
+    minHeight: 420,
+    padding: '16px 18px',
+    border: '1px solid rgba(114, 98, 78, 0.2)',
+    borderRadius: 16,
+    background: '#fff',
+    fontFamily: 'inherit',
+    fontSize: 17,
+    resize: 'vertical',
+    lineHeight: 1.9,
+  },
+  actionStack: {
+    display: 'grid',
+    gap: 10,
+  },
+  primaryBtn: {
+    padding: '11px 16px',
+    borderRadius: 999,
+    border: 'none',
+    background: '#2f6b5f',
+    color: '#fff',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  secondaryBtn: {
+    padding: '11px 16px',
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.22)',
+    background: '#fff',
+    color: '#3b332a',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  linkButton: {
+    padding: '11px 16px',
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.22)',
+    background: '#fff',
+    color: '#3b332a',
+    fontWeight: 700,
+    textDecoration: 'none',
+    textAlign: 'center',
+  },
+  info: {
+    color: '#6b6053',
+  },
+  success: {
+    color: '#1e8449',
+    fontWeight: 600,
+    marginBottom: 14,
+  },
+  error: {
+    color: '#c0392b',
+    fontWeight: 600,
+    marginBottom: 14,
+  },
+};
+
+============================================================
+
+FILE: frontend/src/pages/CollectionsPage.jsx
+------------------------------------------------------------
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../api/client.js';
+
+export default function CollectionsPage() {
+  const navigate = useNavigate();
+
+  const [collections, setCollections] = useState([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [selectedCollection, setSelectedCollection] = useState(null);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+
+  async function loadCollections(preferredId = '') {
+    setLoading(true);
+    setError('');
+
+    try {
+      const data = await api.getCollections();
+      const list = Array.isArray(data) ? data : [];
+      setCollections(list);
+
+      const nextId =
+        preferredId ||
+        (list.some((collection) => collection.id === selectedId)
+          ? selectedId
+          : list[0]?.id || '');
+
+      setSelectedId(nextId);
+    } catch (e) {
+      setError(e?.message || 'Failed to load collections');
+      setCollections([]);
+      setSelectedId('');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadCollectionDetail(collectionId) {
+    if (!collectionId) {
+      setSelectedCollection(null);
+      return;
+    }
+
+    setDetailLoading(true);
+    setError('');
+
+    try {
+      const data = await api.getCollection(collectionId);
+      setSelectedCollection(data || null);
+    } catch (e) {
+      setError(e?.message || 'Failed to load collection');
+      setSelectedCollection(null);
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadCollections();
+  }, []);
+
+  useEffect(() => {
+    loadCollectionDetail(selectedId);
+  }, [selectedId]);
+
+  async function createCollection(event) {
+    event.preventDefault();
+
+    const cleanName = name.trim();
+    if (!cleanName) {
+      return;
+    }
+
+    setBusy(true);
+    setError('');
+    setInfo('');
+
+    try {
+      const created = await api.createCollection(cleanName, description.trim());
+      setName('');
+      setDescription('');
+      setInfo('Collection created.');
+      await loadCollections(created?.id || '');
+    } catch (e) {
+      setError(e?.message || 'Failed to create collection');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSong(songId) {
+    if (!selectedId || !songId || busy) {
+      return;
+    }
+
+    setBusy(true);
+    setError('');
+    setInfo('');
+
+    try {
+      await api.removeFromCollection(selectedId, songId);
+      setInfo('Song removed from collection.');
+      await Promise.all([loadCollections(selectedId), loadCollectionDetail(selectedId)]);
+    } catch (e) {
+      setError(e?.message || 'Failed to remove song');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeCollection() {
+    if (!selectedId || busy) {
+      return;
+    }
+
+    if (!window.confirm('Delete this collection?')) {
+      return;
+    }
+
+    setBusy(true);
+    setError('');
+    setInfo('');
+
+    try {
+      await api.deleteCollection(selectedId);
+      setSelectedCollection(null);
+      setInfo('Collection deleted.');
+      await loadCollections('');
+    } catch (e) {
+      setError(e?.message || 'Failed to delete collection');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function printCollection() {
+    if (!selectedId) {
+      return;
+    }
+
+    setError('');
+
+    try {
+        await api.printPdf({
+          collectionId: selectedId,
+          config: {
+            format: 'A4',
+            includeToc: true,
+            songsPerPage: 1,
+          },
+        });
+    } catch (e) {
+      setError(e?.message || 'Failed to print collection');
+    }
+  }
+
+  return (
+    <div style={styles.page}>
+      <header style={styles.header}>
+        <div>
+          <h1 style={styles.title}>Collection Library</h1>
+          <p style={styles.subTitle}>Group songs for browsing, curation, and printing.</p>
+        </div>
+
+        <div style={styles.headerActions}>
+          {selectedId && (
+            <>
+              <button type="button" style={styles.secondaryBtn} onClick={printCollection}>
+                Print Collection
+              </button>
+              <button
+                type="button"
+                style={styles.dangerBtn}
+                onClick={removeCollection}
+                disabled={busy}
+              >
+                Delete Collection
+              </button>
+            </>
+          )}
+        </div>
+      </header>
+
+      <form style={styles.createCard} onSubmit={createCollection}>
+        <div style={styles.createFields}>
+          <label style={styles.field}>
+            <span style={styles.fieldLabel}>Name</span>
+            <input
+              style={styles.input}
+              placeholder="New collection name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          <label style={styles.field}>
+            <span style={styles.fieldLabel}>Description</span>
+            <input
+              style={styles.input}
+              placeholder="Optional description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </label>
+        </div>
+        <button type="submit" style={styles.primaryBtn} disabled={busy || !name.trim()}>
+          Create Collection
+        </button>
+      </form>
+
+      {error && <p style={styles.error}>{error}</p>}
+      {info && <p style={styles.success}>{info}</p>}
+
+      <div style={styles.layout}>
+        <aside style={styles.sidebar}>
+          <div style={styles.sidebarHeader}>
+            <h2 style={styles.sectionTitle}>All Collections</h2>
+            <div style={styles.countPill}>{collections.length}</div>
+          </div>
+
+          {loading ? (
+            <p style={styles.muted}>Loading collections...</p>
+          ) : collections.length === 0 ? (
+            <p style={styles.muted}>No collections yet.</p>
+          ) : (
+            <div style={styles.collectionList}>
+              {collections.map((collection) => {
+                const active = collection.id === selectedId;
+
+                return (
+                  <button
+                    key={collection.id}
+                    type="button"
+                    style={active ? styles.collectionItemActive : styles.collectionItem}
+                    onClick={() => setSelectedId(collection.id)}
+                  >
+                    <strong>{collection.name}</strong>
+                    <span style={styles.collectionMeta}>
+                      {Number(collection.songs_count || 0)} song(s)
+                    </span>
+                    {collection.description ? (
+                      <span style={styles.collectionDescription}>{collection.description}</span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </aside>
+
+        <section style={styles.detail}>
+          {!selectedId ? (
+            <p style={styles.muted}>Select a collection to view its songs.</p>
+          ) : detailLoading ? (
+            <p style={styles.muted}>Loading collection...</p>
+          ) : !selectedCollection ? (
+            <p style={styles.muted}>Collection not found.</p>
+          ) : (
+            <>
+              <div style={styles.detailHeader}>
+                <div>
+                  <p style={styles.detailEyebrow}>Selected collection</p>
+                  <h2 style={styles.detailTitle}>{selectedCollection.name}</h2>
+                  <p style={styles.detailDescription}>
+                    {selectedCollection.description || 'No description'}
+                  </p>
+                </div>
+                <div style={styles.detailSummary}>
+                  <div style={styles.summaryCard}>
+                    <strong>{selectedCollection.songs?.length || 0}</strong>
+                    <span>songs</span>
+                  </div>
+                </div>
+              </div>
+
+              {Array.isArray(selectedCollection.songs) && selectedCollection.songs.length > 0 ? (
+                <div style={styles.tableWrap}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>#</th>
+                        <th style={styles.th}>Title</th>
+                        <th style={styles.th}>Artist</th>
+                        <th style={styles.th}>Lyrics</th>
+                        <th style={styles.th}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedCollection.songs.map((song, index) => (
+                        <tr key={song.id}>
+                          <td style={styles.td}>{index + 1}</td>
+                          <td style={styles.td}>{song.title || '-'}</td>
+                          <td style={styles.td}>{song.artist_name || '-'}</td>
+                          <td style={styles.td}>{song.lyrics_status || '-'}</td>
+                          <td style={styles.td}>
+                            <div style={styles.rowActions}>
+                              <button
+                                type="button"
+                                style={styles.rowBtn}
+                                onClick={() => navigate(`/songs/${song.id}`)}
+                              >
+                                Open
+                              </button>
+                              <button
+                                type="button"
+                                style={styles.rowDangerBtn}
+                                onClick={() => removeSong(song.id)}
+                                disabled={busy}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p style={styles.muted}>This collection is empty.</p>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  page: {
+    maxWidth: 1320,
+    margin: '0 auto',
+    padding: '28px 20px 48px',
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 16,
+    marginBottom: 20,
+    flexWrap: 'wrap',
+  },
+  title: {
+    margin: '0 0 8px',
+    fontSize: 40,
+    color: '#2c241b',
+  },
+  subTitle: {
+    margin: 0,
+    color: '#6b6053',
+    lineHeight: 1.6,
+  },
+  headerActions: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  },
+  createCard: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    gap: 14,
+    flexWrap: 'wrap',
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 20,
+    padding: 20,
+    boxShadow: '0 14px 30px rgba(77, 60, 35, 0.05)',
+    marginBottom: 18,
+  },
+  createFields: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+    gap: 14,
+    flex: '1 1 520px',
+  },
+  field: {
+    display: 'grid',
+    gap: 6,
+  },
+  fieldLabel: {
+    color: '#6a5d4f',
+    fontSize: 13,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+  },
+  input: {
+    width: '100%',
+    padding: '11px 14px',
+    borderRadius: 14,
+    border: '1px solid rgba(114, 98, 78, 0.2)',
+    background: '#fff',
+    color: '#2f261c',
+    fontFamily: 'inherit',
+  },
+  primaryBtn: {
+    padding: '11px 16px',
+    borderRadius: 999,
+    border: 'none',
+    background: '#2f6b5f',
+    color: '#fff',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  secondaryBtn: {
+    padding: '11px 16px',
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.22)',
+    background: '#fff',
+    color: '#3b332a',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  dangerBtn: {
+    padding: '11px 16px',
+    borderRadius: 999,
+    border: '1px solid rgba(192, 57, 43, 0.24)',
+    background: '#fff',
+    color: '#b03a2e',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  layout: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+    gap: 18,
+    alignItems: 'start',
+  },
+  sidebar: {
+    background: '#fffdf8',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 20,
+    padding: 18,
+  },
+  sidebarHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    margin: 0,
+    color: '#2f261c',
+  },
+  countPill: {
+    padding: '6px 10px',
+    borderRadius: 999,
+    background: '#f3ece0',
+    color: '#55493d',
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  collectionList: {
+    display: 'grid',
+    gap: 10,
+  },
+  collectionItem: {
+    display: 'grid',
+    gap: 4,
+    textAlign: 'left',
+    padding: '14px 16px',
+    border: '1px solid rgba(114, 98, 78, 0.16)',
+    borderRadius: 16,
+    background: '#fffefb',
+    cursor: 'pointer',
+    color: '#3f352a',
+  },
+  collectionItemActive: {
+    display: 'grid',
+    gap: 4,
+    textAlign: 'left',
+    padding: '14px 16px',
+    border: '1px solid rgba(47, 107, 95, 0.24)',
+    borderRadius: 16,
+    background: '#eef7f3',
+    cursor: 'pointer',
+    color: '#2f261c',
+    boxShadow: '0 0 0 2px rgba(47, 107, 95, 0.08)',
+  },
+  collectionMeta: {
+    color: '#7a6d5d',
+    fontSize: 12,
+  },
+  collectionDescription: {
+    color: '#6b6053',
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+  detail: {
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 20,
+    padding: 20,
+    minHeight: 320,
+    boxShadow: '0 14px 30px rgba(77, 60, 35, 0.05)',
+  },
+  detailHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 14,
+    flexWrap: 'wrap',
+    marginBottom: 16,
+  },
+  detailEyebrow: {
+    margin: 0,
+    color: '#8a6f3f',
+    textTransform: 'uppercase',
+    letterSpacing: '0.12em',
+    fontSize: 12,
+    fontWeight: 700,
+  },
+  detailTitle: {
+    margin: '6px 0 8px',
+    color: '#2b241c',
+    fontSize: 28,
+  },
+  detailDescription: {
+    margin: 0,
+    color: '#6d6152',
+    lineHeight: 1.6,
+  },
+  detailSummary: {
+    display: 'grid',
+    gap: 10,
+  },
+  summaryCard: {
+    display: 'grid',
+    gap: 4,
+    minWidth: 120,
+    padding: '14px 16px',
+    borderRadius: 18,
+    background: '#faf5ec',
+    border: '1px solid rgba(114, 98, 78, 0.12)',
+    textAlign: 'center',
+  },
+  tableWrap: {
+    overflowX: 'auto',
+    borderRadius: 18,
+    border: '1px solid rgba(114, 98, 78, 0.14)',
+  },
+  table: {
+    width: '100%',
+    borderCollapse: 'collapse',
+  },
+  th: {
+    textAlign: 'left',
+    padding: '12px 14px',
+    background: '#faf5ec',
+    borderBottom: '1px solid rgba(114, 98, 78, 0.18)',
+    color: '#493d30',
+    whiteSpace: 'nowrap',
+  },
+  td: {
+    padding: '12px 14px',
+    borderBottom: '1px solid rgba(114, 98, 78, 0.12)',
+    verticalAlign: 'top',
+    color: '#3c3126',
+  },
+  rowActions: {
+    display: 'flex',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  rowBtn: {
+    padding: '8px 12px',
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.2)',
+    background: '#fff',
+    color: '#3b332a',
+    cursor: 'pointer',
+    fontWeight: 700,
+  },
+  rowDangerBtn: {
+    padding: '8px 12px',
+    borderRadius: 999,
+    border: '1px solid rgba(192, 57, 43, 0.24)',
+    background: '#fff',
+    color: '#b03a2e',
+    cursor: 'pointer',
+    fontWeight: 700,
+  },
+  muted: {
+    color: '#777',
+  },
+  success: {
+    color: '#1e8449',
+    fontWeight: 600,
+    marginBottom: 14,
+  },
+  error: {
+    color: '#c0392b',
+    fontWeight: 600,
+    marginBottom: 14,
+  },
+};
+
+============================================================
+
+FILE: README.md
+------------------------------------------------------------
+# Shir-On
+
+Shir-On is a local-first personal song library and printable songbook.
+
+The app lets you:
+- import songs from Spotify playlists and albums
+- import songs from CSV or JSON
+- manage songs, lyrics, tags, playlists, and print flows
+- group songs into collections
+- run live lyrics fetch jobs with per-song status
+- reconnect to active lyrics and Spotify import jobs after page navigation
+- review unified batch reports with drill-down diagnostics
+- keep one lyrics row per song through startup repair + unique-index enforcement on local databases
+- reset stored reports from the Reports screen when you want a clean history
+- read the library as a digital songbook with TOC links and playlist selection
+- generate printable PDF songbooks with artist-sorted output, optional single-song pages, and supported two-column lyrics layouts
+
+## Stack
+
+- Frontend: React + Vite + React Router
+- Backend: Express
+- Database: SQLite via `better-sqlite3`
+- Printing: Puppeteer PDF generation
+- Integrations: Spotify OAuth + multiple lyrics providers
+
+## Repository layout
+
+```text
+Shir-On/
+  backend/
+    data/
+    src/
+      db/
+      print/
+      providers/
+      routes/
+      services/
+      utils/
+  frontend/
+    src/
+      api/
+      components/
+      pages/
+  scripts/
+```
+
+## Main flows
+
+1. Import songs from Spotify, CSV, or JSON.
+2. Normalize and store artists, albums, songs, and lyrics in SQLite.
+3. Preserve playlist identity and browse either all songs or one imported playlist.
+4. Reuse the same library song across multiple playlists; existing songs are linked into the new playlist instead of being blocked.
+5. Playlists intentionally point to unique library songs, not repeated playlist-item occurrences.
+6. Fetch lyrics with provider fallbacks and save one batch report per fetch.
+7. Use report filters to inspect all entries, passed entries, blocked entries, or specific block reasons.
+8. Clear active and legacy report JSON files from the Reports screen if you want to restart reporting from zero.
+9. Read the collection as a digital songbook or generate PDF output, either for all songs or one playlist.
+
+## API surface
+
+The backend listens on `127.0.0.1:${PORT}` and mounts:
+- `/api/songs`
+- `/api/spotify`
+- `/api/import`
+- `/api/reports`
+- `/api/collections`
+- `/api/playlists`
+- `/api/print`
+- `/health`
+
+## Environment
+
+Backend env vars are documented in [backend/.env.example](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/.env.example).
+Frontend API override is documented in [frontend/.env.example](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/.env.example).
+
+Important values:
+- `PORT`
+- `FRONTEND_URL`
+- `SESSION_SECRET`
+- `SPOTIFY_CLIENT_ID`
+- `SPOTIFY_CLIENT_SECRET`
+- `SPOTIFY_REDIRECT_URI`
+
+Local Spotify note:
+- keep `FRONTEND_URL` and `SPOTIFY_REDIRECT_URI` aligned with the actual local URL you use
+- the backend currently accepts `127.0.0.1` and `localhost` frontend origins on ports `5173` and `5174`
+
+## Local development
+
+```bash
+npm run setup
+npm run migrate
+npm run dev
+```
+
+Useful commands:
+- `npm run backend`
+- `npm run frontend`
+- `npm run build`
+- `npm run migrate:reports`
+
+## UI notes
+
+- the top navigation now includes a dedicated `Library` entry, so pages no longer need separate back-to-library buttons
+- the top navigation stays visible while moving between pages
+- major page headers now use one clear primary title instead of eyebrow text plus a second large heading
+- reading mode can be scoped to `All songs` or one imported playlist
+- the main navigation label is `Import Playlist`
+- the Spotify connection action now sits in the same header row as the `Spotify Connection` title
+- the import screen now places the Spotify connect/disconnect action directly in the main page header instead of a separate connection card
+- the Spotify connect/disconnect action is now pinned to the far right edge of the import page header
+- the `Fetch Lyrics` page can also be scoped to one playlist and reconnect to the tracked lyrics job after navigation without jumping to an unrelated run
+- the `Fetch Lyrics` screen now loads explicitly requested songs through one bulk API request instead of one request per song
+- the Song page year field now supports both typing and picking from a year list
+- the Song page header now stays compact and no longer repeats a status/tag summary row under the title
+- printing now submits directly into a new preview tab instead of waiting on a client-side blob handoff
+- the Reports screen includes a destructive `Reset Reports` action that clears both active and legacy JSON report files
+- the song editor and collections pages now use the same card, spacing, and action hierarchy patterns as the main library UI
+- the song editor now exposes comma-separated tag editing on top of the existing backend tag support
+- background lyrics and Spotify import jobs now refuse duplicate runs for the same scope and reconnect to the existing job instead
+- library filtering now uses only `All Songs`, `Has Lyrics`, and `No Lyrics`
+- print entry points are now exposed directly in the Library and Songbook screens
+- user-facing lyrics terminology now consistently says `Fetch` instead of `Run`
+- the Songbook screen now excludes songs without lyrics
+- printed songbooks now use a two-column book layout, including a two-column table of contents
+- print pages now keep Hebrew songs in RTL alignment and allow longer single-song prints to flow from the first column into the second
+- each printed song is now constrained to a single page; longer songs shrink font as needed instead of spilling past that page
+- printed pages now include page numbers, and the table of contents includes matching page numbers for each song
+- Hebrew single-song print pages now begin from the right column first
+- non-Hebrew single-song print pages now begin from the left column first
+- the print engine now uses tighter header/footer spacing and denser TOC spacing to reduce empty columns and empty pages
+- the print engine now paginates by testing overflow in actual right/left page columns inside Puppeteer, instead of relying on fixed unit heuristics
+- the table of contents now uses an explicit two-column page layout instead of browser auto-balancing, and it always pours content into the right column first and then the left
+- TOC content now pours sequentially through the right column first and then the left, so artist groups no longer reserve dead space at column boundaries
+- TOC columns are now positioned explicitly in right/left slots instead of relying on grid direction heuristics
+- printed song pages now also use explicit right/left column markup instead of browser auto-flow for long songs
+- the Songbook playlist selector now appears without an extra `Playlist` label above it
+
+## Data written locally
+
+- SQLite DB: `backend/data/songbook.db`
+- Reports: `backend/data/reports/*.json`
+- Legacy reports after migration: `backend/data/reports/legacy/*.json`
+
+## Current status
+
+Verified from the checked-in code and local workspace data:
+- the project already has a populated SQLite database
+- reports are persisted to disk
+- Spotify playlist import has been used successfully
+- lyrics fetch reports are being generated in volume
+- new import reports no longer embed a duplicated full `legacy_report` payload inside `meta`
+- import report creation now goes through one shared backend helper for Spotify, CSV, and JSON sources
+- import summaries and background job counters now treat `linked_existing` as a successful outcome instead of a skipped one
+
+## Documentation map
+
+- Setup: [BOOTSTRAP.md](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/BOOTSTRAP.md)
+- Architecture: [ARCHITECTURE.md](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/ARCHITECTURE.md)
+- Audit tracker: [AUDIT.md](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/AUDIT.md)
+- Known issues: [KNOWN_ISSUES.md](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/KNOWN_ISSUES.md)
+- Agent guidance: [AGENTS.md](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/AGENTS.md)
+
+============================================================
+
+FILE: ARCHITECTURE.md
+------------------------------------------------------------
+# ARCHITECTURE.md
+
+## Overview
+
+Shir-On is a split frontend/backend app for maintaining a personal songbook.
+
+```text
+React UI
+  -> fetch / JSON
+Express API
+  -> services
+  -> lyrics providers
+  -> Spotify integration
+  -> SQLite
+  -> PDF generation
+```
+
+## Frontend
+
+Source: [frontend/src](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src)
+
+Verified stack:
+- React 18
+- Vite
+- React Router
+
+Verified pages:
+- library
+- song editor / song detail
+- import
+- collections
+- duplicates review
+- live lyrics run
+- reports list
+- single report view
+- digital songbook
+
+Verified shared navigation:
+- the top navigation bar is rendered once in `frontend/src/main.jsx`
+- the top navigation now includes an explicit `Library` entry for quick return to the root library view
+- the primary nav includes a generic `Import` entry because the page handles Spotify playlists, Spotify albums, CSV, and JSON
+- the song editor and collections pages now follow the same modern card-based UI language as library, reports, and songbook
+- the song editor now exposes the existing backend tag model through a simple comma-separated tags input
+- the Library and Songbook screens now expose direct print actions instead of hiding printing behind a separate print-ready workflow
+
+Frontend API client:
+- [frontend/src/api/client.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/api/client.js)
+
+## Backend
+
+Source: [backend/src](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src)
+
+Verified responsibilities:
+- load env and configure Express
+- apply schema at startup
+- manage songs, lyrics, tags, collections
+- handle Spotify OAuth and imports
+- accept CSV/JSON imports
+- persist reports to disk
+- generate printable PDFs
+
+Backend entry:
+- [backend/src/index.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/index.js)
+
+## Database
+
+DB bootstrap:
+- [backend/src/db/index.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/db/index.js)
+- [backend/src/db/migrate.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/db/migrate.js)
+- [backend/src/db/schema.sql](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/db/schema.sql)
+
+SQLite data model includes:
+- `artists`
+- `albums`
+- `songs`
+- `lyrics`
+- `tags`
+- `song_tags`
+- `collections`
+- `collection_songs`
+- `playlists`
+- `playlist_songs`
+- `print_sets`
+- `print_set_songs`
+
+Disk location:
+- `backend/data/songbook.db`
+
+## Song flow
+
+1. Songs enter through Spotify, CSV, JSON, or manual add.
+2. Import code normalizes track payloads.
+3. `songService` upserts artists/albums and creates songs.
+4. Library queries read songs with joined artist/album data.
+5. Playlist membership is persisted separately and can scope the library view.
+6. The chosen playlist model is intentional: playlists point to unique library songs rather than repeated playlist-item occurrences.
+7. Lyrics can be entered manually or fetched later.
+8. The digital songbook now reads only songs that already have lyrics, either from the whole library or from one playlist-scoped slice of the library.
+9. The lyrics fetch monitor can scope missing-song runs to one playlist and reconnect to the last tracked background job from the browser.
+10. Duplicate merges now reassign playlist, collection, print-set, and tag relationships before removing merged-away song rows.
+11. Library-level lyrics filtering now collapses status detail into a simpler `all / has lyrics / no lyrics` model in the UI.
+
+Core files:
+- [backend/src/services/importService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/importService.js)
+- [backend/src/services/songService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/songService.js)
+- `GET /api/songs` can also accept a comma-separated `ids` query for bulk scope loading
+
+## Lyrics architecture
+
+Lyrics orchestration:
+- [backend/src/providers/lyrics/index.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/providers/lyrics/index.js)
+
+Verified provider order:
+1. Non-Hebrew queries:
+   - `lrclib.net`
+   - `musixmatch`
+   - `letras.com`
+   - `lyrics.ovh`
+2. Hebrew queries:
+   - `tab4u`
+   - `zemereshet`
+   - `google-sites`
+   - `lrclib.net`
+   - `musixmatch`
+   - `letras.com`
+   - `lyrics.ovh`
+
+Verified inactive Hebrew providers:
+- `shironet`
+  - currently excluded from the active chain because upstream requests return HTTP 403
+- `nli`
+  - currently excluded from the active chain because upstream requests return HTTP 403
+
+Verified restored Hebrew provider:
+- `zemereshet`
+  - historically successful in legacy runs
+  - previously broken because `search.asp` now serves a Google CSE shell
+  - restored by switching the provider back to the working server-side `songs.asp` search flow
+
+Verified behavior:
+- sequential attempts
+- provider order depends on whether the query contains Hebrew text
+- per-provider logging
+- per-attempt duration, provider order, and query context are persisted into reports
+- operational provider failures such as upstream 403s are recorded as errors instead of silent no-result rows
+- keep the first result above confidence threshold
+- otherwise retain the best lower-confidence result
+- save one batch fetch report per run instead of one physical JSON file per song
+- startup repair now dedupes older `lyrics` rows by `song_id`, drops the legacy non-unique index, and recreates a unique `lyrics(song_id)` index so song queries can join lyrics directly
+
+## Spotify architecture
+
+Active integration:
+- [backend/src/routes/spotify.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/spotify.js)
+
+Verified behavior:
+- session-based Spotify auth
+- refresh token handling
+- playlist and album import
+- return-to flow back into the import page after auth
+- frontend return-origin capture now accepts both `127.0.0.1` and `localhost` loopback hosts for the local Vite app
+- normalization of inconsistent Spotify response shapes
+- import report persistence
+- playlist membership persistence for imported Spotify playlists
+
+## Reports
+
+Report persistence:
+- [backend/src/services/reportService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/reportService.js)
+
+Reports are stored as JSON files under:
+- `backend/data/reports`
+
+Historical reports migrated out of the active directory are stored under:
+- `backend/data/reports/legacy`
+
+Verified maintenance action:
+- `POST /api/reports/reset` deletes active report JSON files and, by default, legacy report JSON files as well
+- the Reports page uses this route for a user-triggered full report reset
+- background lyrics and Spotify import routes now check for an already-running job with the same scope before creating a new one
+- new import reports keep normalized `entries` and summary data without embedding the full raw report a second time under `meta.legacy_report`
+- Spotify, CSV, and JSON import routes now build those reports through one shared backend helper instead of duplicating the entry-shaping logic in each route
+- import summaries now keep `linked_existing` separate from true `skipped` rows, and background import jobs count existing-link matches as successful work
+
+Verified report types in workspace data:
+- `lyrics_fetch / batch_run`
+- `lyrics_fetch / single_song_run`
+- `import / spotify_playlist`
+- `import / spotify_album`
+- `import / csv`
+- `import / json`
+
+## Printing
+
+Print route:
+- [backend/src/routes/print.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/print.js)
+
+PDF engine:
+- [backend/src/print/engine.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/print/engine.js)
+
+Verified capabilities:
+- print selected songs, a collection, or the whole library when no explicit print scope is passed
+- PDF generation through Puppeteer
+- RTL-aware layout for Hebrew content
+- artist-sorted output with a clickable digital TOC
+- configurable page size, margins, TOC, line spacing, and supported single-song / two-song page layouts
+- printed songbooks now render in a two-column page structure
+- short pages can hold two songs side by side, while longer single-song pages can flow from the first column into the second
+- the printed table of contents also uses a two-column layout
+- each printed song is constrained to one physical page, with smaller font presets used when a long song needs to stay within that page
+- the PDF renderer now assigns page numbers to song pages and includes those numbers in the printed table of contents
+- Hebrew single-song pages now flow from the right column first
+- non-Hebrew single-song pages now flow from the left column first
+- the print layout uses reduced header/footer spacing and denser TOC spacing to fit more content into the same page footprint
+- TOC pages are now split into explicit right/left columns in code instead of relying on browser multi-column balancing
+- TOC rows now flow sequentially through the right column and then the left, even across artist boundaries, to reduce dead space
+- the print engine now assigns TOC rows and lyrics by checking overflow in actual right/left page columns inside Puppeteer, instead of estimating fit with fixed unit counts
+- long printed songs now render through explicit right/left page columns in the HTML markup instead of relying on CSS column auto-flow
+- the current frontend now triggers print from the visible library scope, the current songbook scope, or a single song page
+
+============================================================
+
+FILE: AUDIT.md
+------------------------------------------------------------
+# AUDIT.md
+
+## Purpose
+
+This file tracks the practical system audit for Shir-On, the fixes already applied from that audit, and the next priorities that remain.
+
+Status labels:
+- `Open`: verified issue still present
+- `Reduced`: issue still exists in narrower form after a partial fix
+- `Fixed`: verified issue addressed in current code
+- `Inferred`: likely issue from code evidence, not fully reproduced end to end
+
+---
+
+## Key findings
+
+Verified before fixes:
+- duplicate merges could silently drop playlist, collection, print-set, and tag membership
+- import and lyrics jobs behaved inconsistently after navigation
+- print configuration promised more than the PDF engine actually honored
+- import reports duplicated large raw payloads into `meta.legacy_report`
+- route-level JSON/CSV normalization dropped metadata that the import service already supported
+
+Current status:
+- the highest-risk data-loss bug is now `Fixed`
+- the most misleading print behavior is `Reduced`
+- job reconnection is more consistent and active jobs are no longer trimmed out of memory due to history pressure
+- report bloat from duplicated raw payload storage is `Fixed` for newly created import reports
+- import metadata loss from CSV/JSON routes is `Fixed`
+
+---
+
+## Fixes applied
+
+### 1. Duplicate merge relationship loss
+
+Status: `Fixed`
+
+What changed:
+- `mergeSongs()` now reassigns `playlist_songs`, `collection_songs`, `print_set_songs`, and `song_tags` to the kept song before deleting merged-away rows
+
+Why it mattered:
+- duplicate cleanup could previously remove songs from curated playlists, collections, print sets, and tags without warning
+
+Code:
+- [backend/src/services/songService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/songService.js)
+
+### 2. Active jobs disappearing from the in-memory registry
+
+Status: `Fixed`
+
+What changed:
+- job trimming now preserves `queued` and `running` jobs
+- trimming runs again when jobs complete or fail, instead of only on creation
+
+Why it mattered:
+- an older active job could disappear from `/api/jobs` after enough newer jobs were created
+
+Code:
+- [backend/src/services/jobService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/jobService.js)
+
+### 3. Lyrics preview endpoint was not a preview
+
+Status: `Fixed`
+
+What changed:
+- `/api/songs/:id/fetch-lyrics-preview` now runs with `persist: false`
+
+Why it mattered:
+- the route name implied inspection, but it actually wrote lyrics into the database
+
+Code:
+- [backend/src/routes/songs.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/songs.js)
+
+### 4. Print engine ignored supported UI intent and could truncate content
+
+Status: `Reduced`
+
+What changed:
+- the PDF engine now honors supported `songsPerPage`
+- single-song printing can render lyrics in two columns for the supported layout
+- hidden overflow was removed from song cards and lyrics blocks
+- frontend print actions now send a smaller set of supported options
+
+Why it mattered:
+- the engine previously forced two songs per page and could visually clip long songs
+
+Code:
+- [backend/src/print/engine.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/print/engine.js)
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+- [frontend/src/pages/CollectionsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/CollectionsPage.jsx)
+
+Remaining note:
+- advanced print options are still intentionally narrower than some old UI assumptions
+
+### 5. Import jobs did not reconnect after navigation
+
+Status: `Fixed`
+
+What changed:
+- the import page now stores the last import job id in local storage
+- it reconnects to that job on revisit
+- it clears stale job ids when the backend no longer has that job
+
+Why it mattered:
+- Spotify imports felt less reliable than lyrics runs, even when the backend work was still running
+
+Code:
+- [frontend/src/pages/ImportPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ImportPage.jsx)
+
+### 6. Lyrics page could attach to the wrong job
+
+Status: `Fixed`
+
+What changed:
+- the lyrics run page no longer auto-binds to the latest job from the jobs list when no tracked job id is present
+- it reconnects only to the explicitly tracked local job id
+
+Why it mattered:
+- opening a scoped lyrics screen could show progress from an unrelated run
+
+Code:
+- [frontend/src/pages/LyricsRunPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/LyricsRunPage.jsx)
+
+### 7. Import reports stored duplicated raw payloads
+
+Status: `Fixed`
+
+What changed:
+- newly created CSV, JSON, Spotify playlist, and Spotify album reports no longer embed the full raw `report` object under `meta.legacy_report`
+
+Why it mattered:
+- report files were larger than necessary and duplicated information already normalized into `summary` and `entries`
+
+Code:
+- [backend/src/routes/import.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/import.js)
+- [backend/src/routes/spotify.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/spotify.js)
+
+Remaining note:
+- existing report JSON files on disk still contain the historical duplication until explicitly migrated or regenerated
+
+### 8. CSV/JSON import route dropped supported metadata
+
+Status: `Fixed`
+
+What changed:
+- route normalization now preserves extra fields from the input record while still cleaning the core required fields
+
+Why it mattered:
+- fields such as `spotify_id`, `spotify_url`, `album_spotify_id`, `track_number`, and `cover_url` could be lost before the import service saw them
+
+Code:
+- [backend/src/routes/import.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/import.js)
+
+### 9. Small UX clarity fixes
+
+Status: `Fixed`
+
+What changed:
+- main nav label changed from `Import Playlists` to `Import`
+- the Songbook page now defaults to all songs instead of silently filtering to print-ready only
+- the library filter now exposes `Reviewed Lyrics`
+- the duplicates page labels its merge action more honestly
+
+Code:
+- [frontend/src/main.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/main.jsx)
+- [frontend/src/pages/SongbookPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongbookPage.jsx)
+- [frontend/src/components/FilterBar.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/components/FilterBar.jsx)
+- [frontend/src/pages/DuplicatesPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/DuplicatesPage.jsx)
+
+### 10. Unused legacy single-song lyrics export
+
+Status: `Fixed`
+
+What changed:
+- removed the unused `autoFetchLyrics()` export from `songService`
+
+Why it mattered:
+- the live app already uses `lyricsRunService` for single-song fetch routes, so keeping the older exported path increased drift risk without adding behavior
+
+Code:
+- [backend/src/services/songService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/songService.js)
+
+### 11. Lyrics row uniqueness was only implied, not enforced
+
+Status: `Fixed`
+
+What changed:
+- startup repair now dedupes older `lyrics` rows per `song_id`
+- the repair drops the legacy non-unique lyrics index and creates a unique `lyrics(song_id)` index
+- song list and song detail queries now join lyrics directly instead of selecting a "latest" row through a subquery
+
+Why it mattered:
+- duplicate lyrics rows could create hidden data inconsistencies and unnecessary query complexity
+
+Code:
+- [backend/src/db/repair.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/db/repair.js)
+- [backend/src/index.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/index.js)
+- [backend/src/db/schema.sql](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/db/schema.sql)
+- [backend/src/services/songService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/songService.js)
+
+### 12. Import report shaping was duplicated between routes
+
+Status: `Fixed`
+
+What changed:
+- Spotify, CSV, and JSON import routes now use one shared `createImportBatchReport()` helper
+
+Why it mattered:
+- duplicated report-shaping logic made drift more likely whenever report fields changed
+
+Code:
+- [backend/src/services/reportService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/reportService.js)
+- [backend/src/routes/import.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/import.js)
+- [backend/src/routes/spotify.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/spotify.js)
+
+### 13. Lyrics run scope loading over-fetched one song at a time
+
+Status: `Fixed`
+
+What changed:
+- `GET /api/songs` now supports an `ids` query for bulk scope loading
+- the Lyrics Run page now uses one request for explicit song scopes and restores requested order client-side
+
+Why it mattered:
+- opening a scoped lyrics run with many selected songs performed N separate song requests instead of one
+
+Code:
+- [backend/src/routes/songs.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/songs.js)
+- [backend/src/services/songService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/songService.js)
+- [frontend/src/api/client.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/api/client.js)
+- [frontend/src/pages/LyricsRunPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/LyricsRunPage.jsx)
+
+### 14. Import report semantics treated linked songs like skipped songs
+
+Status: `Fixed`
+
+What changed:
+- import summaries now keep true `skipped` rows separate from `linked_existing`
+- background Spotify import jobs count linked-existing matches as successful progress instead of skipped progress
+
+Why it mattered:
+- the old counters made successful de-duplication look like a partial failure or skip
+
+Code:
+- [backend/src/services/importService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/importService.js)
+- [backend/src/services/reportService.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/services/reportService.js)
+- [backend/src/routes/spotify.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/spotify.js)
+- [frontend/src/pages/ImportPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ImportPage.jsx)
+- [frontend/src/pages/ReportsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ReportsPage.jsx)
+
+### 15. Unused client/provider surface stayed around after the live flow changed
+
+Status: `Fixed`
+
+What changed:
+- removed the unused legacy backend Spotify provider module
+- removed unused frontend API client methods that were no longer called by the current UI
+
+Why it mattered:
+- dead integration surface makes the codebase look broader than the live product behavior and raises drift risk
+
+Code:
+- [backend/src/providers/spotify.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/providers/spotify.js)
+- [frontend/src/api/client.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/api/client.js)
+
+### 16. Backend tag support had no practical editor in the current UI
+
+Status: `Fixed`
+
+What changed:
+- the Song page now exposes comma-separated tag editing and saves through the existing `/songs/:id/tags` API
+
+Why it mattered:
+- tags existed in the data model and backend routes, but remained effectively hidden from normal library editing
+
+Code:
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+
+### 22. Navigation relied on repeated back buttons instead of the main app chrome
+
+Status: `Fixed`
+
+What changed:
+- added an explicit `Library` entry to the main top navigation
+- removed repeated back-to-library buttons from the individual page headers
+- aligned the Spotify connection action into the `Spotify Connection` section header row
+- removed redundant stacked page-header labels so major screens now use one stronger primary title
+
+Why it mattered:
+- repeated back buttons created visual clutter and made the main navigation feel incomplete
+
+Code:
+- [frontend/src/main.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/main.jsx)
+- [frontend/src/pages/ImportPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ImportPage.jsx)
+- [frontend/src/pages/CollectionsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/CollectionsPage.jsx)
+- [frontend/src/pages/DuplicatesPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/DuplicatesPage.jsx)
+- [frontend/src/pages/JobsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/JobsPage.jsx)
+- [frontend/src/pages/LyricsRunPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/LyricsRunPage.jsx)
+- [frontend/src/pages/ReportsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ReportsPage.jsx)
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+- [frontend/src/pages/SongbookPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongbookPage.jsx)
+
+### 23. Printed songbook pages did not behave like a two-column book
+
+Status: `Fixed`
+
+What changed:
+- printed TOC pages now render in two columns
+- two-song print pages now place songs side by side as two columns on the page
+- single-song print pages now use a two-column page flow, so longer songs can continue from the first column into the second
+- long songs now step down through smaller print font presets so one song still stays within one physical page
+- printed pages now render page numbers, and TOC entries include those song page numbers
+- Hebrew titles, artists, metadata, TOC entries, and lyrics keep RTL alignment inside the PDF
+- Hebrew single-song pages now start from the right column first
+- non-Hebrew single-song pages now start from the left column first
+- the print engine now paginates by checking overflow in actual right/left page columns inside Puppeteer, replacing the older fixed-unit packing heuristic
+- print heuristics are now stricter about pairing two songs on one page, and TOC spacing is tighter to reduce half-empty columns and empty pages
+- TOC pages now use explicit right/left column assignment instead of automatic browser column balancing, to reduce dead space and extra TOC pages
+- TOC rows now flow continuously through right then left columns without forcing a new artist section to start at a fresh column
+
+Why it mattered:
+- the old print layout behaved more like stacked cards than a real book spread, and fixed-unit guesses were still letting Chrome create zig-zag TOC flow and dead space even after the first print rewrite
+
+Code:
+- [backend/src/print/engine.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/print/engine.js)
+- [frontend/src/api/client.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/api/client.js)
+
+### 17. Print-ready state created extra friction in the live UI
+
+Status: `Fixed`
+
+What changed:
+- removed print-ready filtering and print-ready controls from the main frontend flows
+- library and songbook printing now work directly from the current visible scope
+- the backend print route defaults to the whole library when no explicit selection is passed
+
+Why it mattered:
+- the project already had direct print generation, so asking the user to maintain a separate print-ready state made printing harder to discover and harder to trust
+
+Code:
+- [frontend/src/components/FilterBar.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/components/FilterBar.jsx)
+- [frontend/src/pages/Library.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/Library.jsx)
+- [frontend/src/pages/SongbookPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongbookPage.jsx)
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+- [backend/src/routes/print.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/print.js)
+
+### 18. Lyrics status detail was noisier than the user needed
+
+Status: `Fixed`
+
+What changed:
+- library filtering now exposes only `All Songs`, `Has Lyrics`, and `No Lyrics`
+- song rows and song detail status labels now collapse `auto/manual/reviewed` into a simple has-lyrics signal
+- user-facing wording now consistently prefers `Fetch` over `Run`
+
+Why it mattered:
+- the deeper status split was useful internally, but it added interface noise without helping the main personal songbook workflow
+
+Code:
+- [frontend/src/components/FilterBar.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/components/FilterBar.jsx)
+- [frontend/src/components/SongTable.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/components/SongTable.jsx)
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+- [frontend/src/pages/Library.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/Library.jsx)
+- [frontend/src/pages/ReportPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ReportPage.jsx)
+- [frontend/src/pages/ReportsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ReportsPage.jsx)
+
+### 19. Printing and year selection were harder to use than they needed to be
+
+Status: `Fixed`
+
+What changed:
+- `Import` nav label was changed to `Import Playlist`
+- year fields now support typed input plus a scrollable year suggestion list
+- print opening now submits directly into a dedicated preview tab instead of relying on a delayed fetch/blob handoff
+- the library selection bar no longer includes the extra collection chooser block
+
+Why it mattered:
+- these issues created avoidable friction in the main personal workflows of importing, editing, and printing
+
+Code:
+- [frontend/src/main.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/main.jsx)
+- [frontend/src/components/FilterBar.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/components/FilterBar.jsx)
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+- [frontend/src/pages/Library.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/Library.jsx)
+- [frontend/src/api/client.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/api/client.js)
+
+### 20. Songbook scope included songs without lyrics
+
+Status: `Fixed`
+
+What changed:
+- the Songbook screen now requests only songs with lyrics
+
+Why it mattered:
+- a reading/printing songbook is more useful when songs with no lyrics are kept out of the main reading scope
+
+Code:
+- [frontend/src/pages/SongbookPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongbookPage.jsx)
+
+### 21. Song page header repeated low-value metadata
+
+Status: `Fixed`
+
+What changed:
+- removed the summary row under the song title that repeated lyrics presence, link state, Spotify source, and tags
+- the header now stays focused on title plus the artist / album / year subtitle
+
+Why it mattered:
+- the extra row made the song page feel busier without helping the main editing flow
+
+Code:
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+
+### 22. Import flow front-loaded too much Spotify connection chrome
+
+Status: `Fixed`
+
+What changed:
+- removed the separate `Spotify Connection` heading block and explanatory connect text from the top of the import screen
+- moved the Spotify connect/disconnect action into the main import page header on the right
+- pinned the Spotify action group to the far right edge of the header instead of letting it sit centered when extra width was available
+
+Why it mattered:
+- the extra connection block pushed the actual import controls down and repeated information that the primary action button already communicated
+
+Code:
+- [frontend/src/pages/ImportPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ImportPage.jsx)
+
+### 23. Printed TOC and page wrappers still had layout ambiguity
+
+Status: `Reduced`
+
+What changed:
+- TOC columns now sit in explicit right/left grid slots instead of depending on container direction heuristics
+- printed page wrappers now use a smaller fixed content height to reduce phantom blank pages after full content pages
+- long song pages now render through explicit right/left column containers instead of relying on CSS multi-column flow
+
+Why it mattered:
+- the right column must fill before the left in a predictable way, and over-tall page wrappers were a likely source of extra blank pages in the PDF
+
+Code:
+- [backend/src/print/engine.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/print/engine.js)
+
+---
+
+## Remaining priorities
+
+### Critical
+
+- `Reduced`: keep narrowing print configuration so unsupported options cannot drift back into the frontend
+
+### High
+
+- `Reduced`: finish removing the leftover dead lyrics-query helper code still present inside `songService` so lyrics orchestration lives in one place only
+
+### Medium
+
+- `Reduced`: keep historical report views and any remaining labels aligned with the newer `linked_existing` versus `skipped` semantics
+- `Fixed`: playlist storage is now an explicit product decision: playlists represent unique library songs
+- `Reduced`: expand tag browsing and filtering beyond the new song-level editor
+- `Open`: validate the digital songbook reading layout with real long multilingual data and decide whether the current TOC-first layout needs a more performance-oriented reading mode
+
+### Optional
+
+- `Open`: provider scoring and targeted lyrics retry
+- `Open`: playlist diff since last import
+- `Open`: richer artistic reading modes for the digital songbook
+
+---
+
+## Documentation policy
+
+Verified project rule:
+- material code changes should ship with matching documentation updates in the same work session
+- this file should be updated when a major audit finding is fixed, reduced, re-scoped, or newly discovered
+
+============================================================
+
+FILE: KNOWN_ISSUES.md
+------------------------------------------------------------
+# KNOWN_ISSUES.md
+
+## Active issues
+
+### 1. External lyrics providers are inherently unstable
+
+Verified from the implementation:
+- multiple providers are scraped or queried remotely
+- provider order is sequential
+- providers can return no result, low-confidence matches, or hard HTTP failures
+
+Impact:
+- lyrics lookup is useful but not deterministic
+- some songs will still need manual lyrics entry or review
+- newer reports now include provider order, duration, and query details to make failures easier to diagnose
+- some providers are intentionally inactive because upstream blocking made them counterproductive in the main fallback chain
+
+Currently inactive in the default Hebrew chain:
+- `shironet` because live upstream requests return `403`
+- `nli` because live upstream requests return `403`
+
+Historically successful and now restored in the active Hebrew chain:
+- `zemereshet`
+  - it was a major source in older runs
+  - the previous break came from `search.asp` switching to a Google CSE shell
+  - the provider now uses the working server-side `songs.asp` POST flow again
+
+Current active Hebrew order:
+- `tab4u`
+- `zemereshet`
+- `google-sites`
+- `lrclib.net`
+- `musixmatch`
+- `letras.com`
+- `lyrics.ovh`
+
+Relevant files:
+- [backend/src/providers/lyrics/index.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/providers/lyrics/index.js)
+- [backend/src/routes/songs.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/songs.js)
+
+### 2. Spotify import depends on correct local auth config
+
+Verified:
+- backend startup does not require Spotify values
+- Spotify login/import does require `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, and `SPOTIFY_REDIRECT_URI`
+
+Impact:
+- library browsing can work while Spotify import fails
+- auth mismatch shows up as runtime import/login errors, not as compile-time errors
+- local loopback host mismatches are less fragile now because frontend return-origin capture accepts both `127.0.0.1` and `localhost`, but the configured URLs still need to agree with each other
+
+Relevant files:
+- [backend/src/routes/spotify.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/spotify.js)
+- [backend/.env.example](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/.env.example)
+
+### 3. There is no automated test suite in the repository
+
+Verified:
+- root, backend, and frontend `package.json` files do not define test scripts
+
+Impact:
+- regression detection depends on manual runtime checks
+- documentation and report inspection matter more than usual
+
+### 4. Background jobs survive page navigation, but not backend restarts
+
+Verified:
+- background import and lyrics jobs are tracked by the backend job service
+- the frontend now reconnects to the last tracked lyrics or Spotify import job after navigation when possible
+- jobs are still kept in backend memory rather than in SQLite
+- the refreshed Song and Collections pages are visual/UI changes only and do not change backend data rules
+- duplicate runs for the same lyrics scope or Spotify source are now blocked and reuse the active job instead
+- active jobs are no longer trimmed out of the in-memory registry just because the history list exceeded its cap
+
+Impact:
+- changing pages in the UI should not stop an already-started lyrics fetch or Spotify import
+- restarting the backend still drops the in-memory job registry
+- completed reports remain persisted even if the job registry is lost later
+
+Related stability improvement:
+- startup repair now dedupes legacy `lyrics` rows and enforces a unique `song_id` index so song reads do not depend on "latest row wins" behavior across duplicates
+
+### 5. Advanced print settings are still intentionally narrower than the UI once implied
+
+Verified:
+- the print engine now honors supported `songsPerPage`, TOC, margins, line spacing, and a single-song two-column lyrics layout
+- the print engine now paginates by checking overflow in actual right/left page columns before generating the PDF, instead of relying only on fixed unit estimates
+- single-song prints now choose their first column by language: Hebrew starts on the right, non-Hebrew starts on the left
+- the engine does not implement every historical print option that older UI payloads hinted at
+
+Impact:
+- the current printing flow is more honest and less truncation-prone than before
+- future print controls should be added only when the backend actually supports them end to end
+
+### 6. Some older report files still contain historical duplication
+
+Verified:
+- new import reports no longer embed the full raw import payload twice
+- existing JSON report files already written to disk keep their old structure until reset or migration
+
+Impact:
+- report listing and stats are lighter for new runs, but old disk usage does not shrink retroactively
+- historical reports may still reflect the older `skipped` semantics until they are regenerated
+
+### 7. Some backend capabilities still have limited or no frontend workflow
+
+Verified:
+- `collections` routes exist
+- `print_sets` exist in the DB schema
+- current frontend focuses mainly on library, song, import, and reports pages
+
+Impact:
+- parts of the backend model are ahead of the UI
+- `print_sets` are still effectively internal-only for now and are not exposed as a first-class workflow
+
+Relevant files:
+- [backend/src/routes/collections.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/collections.js)
+- [backend/src/db/schema.sql](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/db/schema.sql)
+
+### 8. Google Sites can return useful lyrics, but the extracted text is sometimes flattened
+
+Verified:
+- the provider can now reach the correct song pages and return lyrics again
+- Google Sites often collapses long lines and metadata into a single paragraph in the page source
+
+Impact:
+- results are useful as a fallback, but formatting quality can still be worse than `tab4u`
+
+Relevant files:
+- [backend/src/providers/lyrics/googleSitesLyrics.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/providers/lyrics/googleSitesLyrics.js)
+
+### 9. The digital songbook layout still needs more real-data validation
+
+Verified:
+- the Songbook screen now prints and reads directly from the current scope without a print-ready gate
+- the Songbook screen now excludes songs without lyrics from its reading scope
+- the current layout is still a TOC-first, artist-grouped reading view
+
+Impact:
+- the main flow is simpler now, but long multilingual sets still need runtime validation to decide whether an alternate performance-oriented reading mode should become the default
+
+## Historical issue
+
+### Windows + Node 24 + `better-sqlite3`
+
+Previously observed:
+- `better-sqlite3` failed to install on Windows under Node 24 in this project
+
+Current recommendation:
+- use Node 20 LTS on Windows unless you have already validated a newer version locally
+
+============================================================
+
+FILE: AGENTS.md
+------------------------------------------------------------
+# AGENTS.md
+
+## Purpose
+
+This file tells a coding agent how to work on Shir-On without inventing architecture that the repo does not actually have.
+
+## Documentation trust model
+
+Every area in this project must be treated under one of these labels:
+
+- **Verified**: directly confirmed from repository code or local data in this workspace
+- **Inferred**: likely true from strong code evidence, but not directly proven end-to-end
+- **Unverified / Needs confirmation**: do not rely on this as fact
+
+Never silently upgrade an inference into a fact.
+
+---
+
+## Project identity
+
+**Verified**
+- Shir-On is a personal songbook / lyrics management project
+- the repo is split into `backend/` and `frontend/`
+- the backend is an Express API
+- the frontend is React + Vite + React Router
+- the DB is SQLite via `better-sqlite3`
+- printing is PDF-based via Puppeteer
+- Spotify auth/import exists
+- lyrics provider fallback exists
+- reports are persisted as JSON files under `backend/data/reports`
+
+**Inferred**
+- the app is intended for local personal use rather than multi-user SaaS
+
+---
+
+## Source of truth by area
+
+| Area | Source of truth |
+|---|---|
+| package scripts | root and subproject `package.json` files |
+| backend entry/runtime | `backend/src/index.js` |
+| DB bootstrapping | `backend/src/db/index.js`, `backend/src/db/migrate.js`, `backend/src/db/schema.sql` |
+| lyrics provider behavior | files under `backend/src/providers/lyrics/` |
+| Spotify integration | `backend/src/routes/spotify.js` |
+| API contracts | backend route handlers + frontend API client |
+| runtime config | `backend/.env` and config reads in code |
+| report persistence | `backend/src/services/reportService.js` |
+| library UI behavior | `frontend/src/pages/Library.jsx` and related components |
+
+If there is a conflict:
+1. code beats docs
+2. local runtime data beats assumptions
+3. update docs after inspection
+
+Documentation maintenance rule:
+- every material code change must update the relevant `.md` files in the same work session
+- `AUDIT.md` must be kept in sync with major findings, fixes applied, and remaining priorities
+- do not leave code and docs knowingly divergent for the user to reconcile later
+
+---
+
+## How an agent should work in this repo
+
+### 1. Preserve the existing architecture
+
+Do not convert the stack to TypeScript, Prisma, Docker, monorepo tooling, ORMs, or hosted DBs unless the user explicitly asks.
+
+### 2. Respect the backend/frontend split
+
+This is a two-part app with a separate frontend dev server and backend API.
+
+### 3. Treat Spotify and lyrics fetching as unstable integration surfaces
+
+External providers can fail, rate-limit, change markup, or require credentials.
+
+### 4. Prefer local, reversible fixes
+
+Good examples:
+- fix a provider parser
+- fix playlist normalization
+- improve diagnostics
+- fix startup scripts or docs
+
+Avoid:
+- speculative rewrites
+- new architecture layers without need
+
+### 5. Be explicit about editable vs generated files
+
+Editable:
+- source code
+- docs
+- config examples
+
+Generated:
+- `node_modules`
+- DB files under `backend/data`
+- reports under `backend/data/reports`
+- lockfiles only via package manager
+
+### 6. Add diagnostics around flaky integrations
+
+Especially for:
+- Spotify config/auth/session failures
+- lyrics provider fallback order
+- provider-specific parser failures
+- import results and skipped rows
+
+### 7. Treat documentation updates as part of done
+
+When a change affects behavior, risks, setup, UX, or architecture:
+- update the nearest source doc such as `README.md`, `ARCHITECTURE.md`, `BOOTSTRAP.md`, or `KNOWN_ISSUES.md`
+- update `AUDIT.md` when the change closes, reduces, or re-prioritizes an audit finding
+- note whether the documented statement is **Verified** or **Inferred** when that distinction matters
+
+---
+
+## Verified implementation facts
+
+- root scripts orchestrate backend and frontend commands
+- backend dev script is `node --watch src/index.js`
+- frontend dev script is `vite`
+- backend binds to `127.0.0.1` and defaults to port `3001`
+- routes include songs, spotify, import, reports, collections, and print
+- schema includes songs, lyrics, tags, collections, and print sets
+- provider inventory includes `zemereshet`, `shironet`, `nli`, `tab4u`, `google-sites`, `lrclib.net`, and `lyrics.ovh`
+- report files exist in volume in the local workspace
+- the UI now includes a persistent top navigation entry for `Library` instead of repeating back-to-library buttons across pages
+- the digital songbook can be scoped to one playlist
+- reports can be cleared from the UI without deleting the SQLite library
+- the lyrics and Spotify import flows reconnect to the last tracked background job from the browser, but the backend job registry is still memory-backed
+- the Song and Collections screens now share the newer card-based UI language used across the rest of the app
+- duplicate background jobs for the same lyrics scope or Spotify source are now intentionally reused instead of duplicated
+- duplicate song merges now preserve playlist, collection, print-set, and tag membership before removing merged-away rows
+- PDF generation now honors single-song pages and two-column lyrics for the supported print layouts, instead of always forcing two songs per page
+
+---
+
+## Guardrails for edits
+
+### Do
+- keep fixes local and reversible
+- preserve API shapes unless changing both backend and frontend together
+- document env expectations in examples or docs
+- keep lyrics fallback tolerant of misses
+- keep report persistence intact when adjusting import/fetch flows
+
+### Do not
+- hardcode secrets
+- commit `.env`
+- remove fallback behavior without replacement
+- treat old planning text files as equal to the actual repository code
+- delete local data files unless the user explicitly asks
+
+---
+
+## Priority order for practical repair
+
+1. environment and startup stability
+2. backend API health
+3. Spotify auth/import correctness
+4. lyrics provider resilience and diagnostics
+5. UX polish
+
+============================================================
+

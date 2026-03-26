@@ -98,7 +98,7 @@ function extractSpotifyId(input, expectedType = null) {
     return value;
   }
 
-  const uriMatch = value.match(/^spotify:(playlist|album):([A-Za-z0-9]+)$/i);
+  const uriMatch = value.match(/^spotify:(playlist|album|track):([A-Za-z0-9]+)$/i);
   if (uriMatch) {
     const [, type, id] = uriMatch;
     if (!expectedType || type.toLowerCase() === expectedType.toLowerCase()) {
@@ -108,7 +108,7 @@ function extractSpotifyId(input, expectedType = null) {
   }
 
   const urlMatch = value.match(
-    /spotify\.com\/(playlist|album)\/([A-Za-z0-9]+)(?:\?|#|\/|$)/i
+    /spotify\.com\/(playlist|album|track)\/([A-Za-z0-9]+)(?:\?|#|\/|$)/i
   );
   if (urlMatch) {
     const [, type, id] = urlMatch;
@@ -119,6 +119,45 @@ function extractSpotifyId(input, expectedType = null) {
   }
 
   return '';
+}
+
+function extractSpotifyTarget(input) {
+  if (!input || typeof input !== 'string') {
+    return null;
+  }
+
+  const value = input.trim();
+  if (!value) {
+    return null;
+  }
+
+  const uriMatch = value.match(/^spotify:(playlist|album|track):([A-Za-z0-9]+)$/i);
+  if (uriMatch) {
+    return {
+      type: uriMatch[1].toLowerCase(),
+      id: uriMatch[2],
+    };
+  }
+
+  const urlMatch = value.match(
+    /spotify\.com\/(playlist|album|track)\/([A-Za-z0-9]+)(?:\?|#|\/|$)/i
+  );
+  if (urlMatch) {
+    return {
+      type: urlMatch[1].toLowerCase(),
+      id: urlMatch[2],
+    };
+  }
+
+  const rawId = extractSpotifyId(value);
+  if (!rawId) {
+    return null;
+  }
+
+  return {
+    type: null,
+    id: rawId,
+  };
 }
 
 function getAuthHeader(clientId, clientSecret) {
@@ -448,6 +487,206 @@ async function fetchAllAlbumTracks(albumId, accessToken) {
     .filter(Boolean);
 }
 
+async function fetchSpotifyTrack(trackId, accessToken) {
+  const track = await spotifyGet(`${SPOTIFY_API_BASE}/tracks/${trackId}`, accessToken);
+  const normalized = normalizeTrackLikeObject(track);
+
+  if (!normalized) {
+    throw new Error('Spotify track could not be normalized');
+  }
+
+  return [normalized];
+}
+
+function shouldContinueSpotifyTypeProbe(err) {
+  const status = Number(err?.response?.status || 0);
+  return status === 400 || status === 404;
+}
+
+async function detectSpotifyImportTarget(input, accessToken) {
+  const extracted = extractSpotifyTarget(input);
+
+  if (!extracted?.id) {
+    return null;
+  }
+
+  if (extracted.type) {
+    return extracted;
+  }
+
+  const probes = [
+    {
+      type: 'track',
+      run: () => spotifyGet(`${SPOTIFY_API_BASE}/tracks/${extracted.id}`, accessToken),
+    },
+    {
+      type: 'album',
+      run: () => spotifyGet(`${SPOTIFY_API_BASE}/albums/${extracted.id}`, accessToken),
+    },
+    {
+      type: 'playlist',
+      run: () =>
+        spotifyGet(`${SPOTIFY_API_BASE}/playlists/${extracted.id}`, accessToken, {
+          fields: 'id',
+        }),
+    },
+  ];
+
+  for (const probe of probes) {
+    try {
+      await probe.run();
+      return {
+        type: probe.type,
+        id: extracted.id,
+      };
+    } catch (err) {
+      if (shouldContinueSpotifyTypeProbe(err)) {
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  return null;
+}
+
+function getSpotifyImportMeta(target) {
+  const typeMap = {
+    playlist: {
+      jobType: 'spotify_playlist_import',
+      label: 'Spotify playlist import',
+      subtype: 'spotify_playlist',
+      fetchPhase: 'fetching_playlist',
+      fetchLabel: 'Fetching Spotify playlist',
+    },
+    album: {
+      jobType: 'spotify_album_import',
+      label: 'Spotify album import',
+      subtype: 'spotify_album',
+      fetchPhase: 'fetching_album',
+      fetchLabel: 'Fetching Spotify album',
+    },
+    track: {
+      jobType: 'spotify_track_import',
+      label: 'Spotify song import',
+      subtype: 'spotify_track',
+      fetchPhase: 'fetching_song',
+      fetchLabel: 'Fetching Spotify song',
+    },
+  };
+
+  return typeMap[target?.type] || null;
+}
+
+async function runSpotifyImportTarget(target, accessToken, controls = null) {
+  const meta = getSpotifyImportMeta(target);
+
+  if (!meta) {
+    throw new Error('Unsupported Spotify import target');
+  }
+
+  controls?.setPhase(meta.fetchPhase, meta.fetchLabel);
+
+  let tracks = [];
+  let playlist = null;
+
+  if (target.type === 'playlist') {
+    const playlistMeta = await fetchPlaylistDetails(target.id, accessToken);
+    tracks = await fetchAllPlaylistTracks(target.id, accessToken);
+    controls?.setTotal(tracks.length);
+    controls?.setPhase('importing_tracks', `Importing ${tracks.length} tracks`);
+
+    const report = importSpotifyTracks(tracks, controls ? {
+      onRow(row, liveReport) {
+        controls.setCurrent(`${row.artist || ''} - ${row.title || ''}`.trim());
+        controls.addEntry(row);
+        controls.updateProgress({
+          total: tracks.length,
+          completed: liveReport.rows.length,
+          succeeded: liveReport.imported + liveReport.linked_existing,
+          failed: liveReport.errors + liveReport.invalid,
+          skipped: 0,
+        });
+      },
+    } : undefined);
+
+    const saved = persistImportReport(meta.subtype, target.id, tracks, report);
+    const linkedSongIds = (Array.isArray(report.rows) ? report.rows : [])
+      .map((row) => row.song_id || row.matched_song_id || null)
+      .filter(Boolean);
+
+    playlist = upsertSpotifyPlaylist(playlistMeta);
+    replacePlaylistSongs(playlist.id, linkedSongIds);
+
+    return {
+      meta,
+      tracks,
+      report,
+      saved,
+      playlist,
+    };
+  }
+
+  if (target.type === 'album') {
+    tracks = await fetchAllAlbumTracks(target.id, accessToken);
+    controls?.setTotal(tracks.length);
+    controls?.setPhase('importing_tracks', `Importing ${tracks.length} tracks`);
+
+    const report = importSpotifyTracks(tracks, controls ? {
+      onRow(row, liveReport) {
+        controls.setCurrent(`${row.artist || ''} - ${row.title || ''}`.trim());
+        controls.addEntry(row);
+        controls.updateProgress({
+          total: tracks.length,
+          completed: liveReport.rows.length,
+          succeeded: liveReport.imported + liveReport.linked_existing,
+          failed: liveReport.errors + liveReport.invalid,
+          skipped: 0,
+        });
+      },
+    } : undefined);
+
+    const saved = persistImportReport(meta.subtype, target.id, tracks, report);
+
+    return {
+      meta,
+      tracks,
+      report,
+      saved,
+      playlist: null,
+    };
+  }
+
+  tracks = await fetchSpotifyTrack(target.id, accessToken);
+  controls?.setTotal(tracks.length);
+  controls?.setPhase('importing_tracks', `Importing ${tracks.length} song`);
+
+  const report = importSpotifyTracks(tracks, controls ? {
+    onRow(row, liveReport) {
+      controls.setCurrent(`${row.artist || ''} - ${row.title || ''}`.trim());
+      controls.addEntry(row);
+      controls.updateProgress({
+        total: tracks.length,
+        completed: liveReport.rows.length,
+        succeeded: liveReport.imported + liveReport.linked_existing,
+        failed: liveReport.errors + liveReport.invalid,
+        skipped: 0,
+      });
+    },
+  } : undefined);
+
+  const saved = persistImportReport(meta.subtype, target.id, tracks, report);
+
+  return {
+    meta,
+    tracks,
+    report,
+    saved,
+    playlist: null,
+  };
+}
+
 function persistImportReport(subtype, sourceId, tracks, report) {
   return createImportBatchReport({
     subtype,
@@ -500,6 +739,79 @@ function buildSpotifyImportResponse({
     report_id: saved.id,
   };
 }
+
+router.post('/import/background', async (req, res) => {
+  try {
+    const spotifySession = await ensureValidSpotifySession(req);
+
+    if (!spotifySession?.access_token) {
+      return res.status(401).json({ error: 'Not authenticated with Spotify' });
+    }
+
+    const target = await detectSpotifyImportTarget(
+      req.body?.spotifyInput || req.body?.source || '',
+      spotifySession.access_token
+    );
+
+    if (!target?.id || !target?.type) {
+      return res.status(400).json({
+        error: 'Enter a Spotify playlist, album, or song URL, URI, or ID',
+      });
+    }
+
+    const importMeta = getSpotifyImportMeta(target);
+    const existingJob = findActiveJobByMeta(
+      importMeta.jobType,
+      {
+        spotify_id: target.id,
+      },
+      ['spotify_id']
+    );
+
+    if (existingJob) {
+      return res.status(200).json({
+        ...existingJob,
+        reused: true,
+      });
+    }
+
+    const accessToken = spotifySession.access_token;
+    const job = createBackgroundJob({
+      type: importMeta.jobType,
+      label: importMeta.label,
+      meta: {
+        spotify_id: target.id,
+      },
+      run: async (controls) => {
+        const { meta, tracks, report, saved, playlist } = await runSpotifyImportTarget(
+          target,
+          accessToken,
+          controls
+        );
+
+        controls.complete({
+          summary: saved.summary || report.summary || {},
+          report_id: saved.id,
+          entries: report.rows,
+          result: buildSpotifyImportResponse({
+            subtype: meta.subtype,
+            sourceId: target.id,
+            tracks,
+            report,
+            saved,
+            playlist,
+          }),
+        });
+      },
+    });
+
+    return res.status(202).json(job);
+  } catch (err) {
+    return res.status(err?.response?.status || 500).json({
+      error: getSpotifyErrorMessage(err, 'Spotify background import failed'),
+    });
+  }
+});
 
 router.get('/status', async (req, res) => {
   const config = getSpotifyStatusPayload();

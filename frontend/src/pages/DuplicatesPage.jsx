@@ -95,7 +95,6 @@ export default function DuplicatesPage() {
     <div style={styles.page}>
       <header style={styles.header}>
         <div>
-          <p style={styles.eyebrow}>Review</p>
           <h1 style={styles.title}>Duplicates</h1>
         </div>
 
@@ -198,17 +197,9 @@ const styles = {
     marginBottom: 24,
     flexWrap: 'wrap',
   },
-  eyebrow: {
-    margin: 0,
-    color: '#8a6f3f',
-    textTransform: 'uppercase',
-    letterSpacing: '0.12em',
-    fontSize: 12,
-    fontWeight: 700,
-  },
   title: {
-    margin: '6px 0 8px',
-    fontSize: 36,
+    margin: '0 0 8px',
+    fontSize: 40,
     color: '#2c241b',
   },
   subTitle: {

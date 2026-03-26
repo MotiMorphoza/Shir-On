@@ -35,6 +35,7 @@ export default function SongPage() {
   const [lyrics, setLyrics] = useState('');
   const [tagsText, setTagsText] = useState('');
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
@@ -181,6 +182,55 @@ export default function SongPage() {
     }
   }
 
+  async function printSong() {
+    if (isNew) {
+      return;
+    }
+
+    setError('');
+    setMsg('');
+
+    try {
+      await api.printPdf({
+        songIds: [id],
+        config: {
+          format: 'A4',
+          songsPerPage: 1,
+          layout: 'fit-one-page-two-columns',
+          includeToc: false,
+        },
+      });
+
+      setMsg('Opened print preview for this song.');
+    } catch (e) {
+      setError(e?.message || 'Print failed');
+    }
+  }
+
+  async function deleteCurrentSong() {
+    if (isNew || deleting || saving) {
+      return;
+    }
+
+    const songTitle = song?.title || form.title || 'this song';
+    if (!window.confirm(`Delete "${songTitle}"?`)) {
+      return;
+    }
+
+    setDeleting(true);
+    setError('');
+    setMsg('');
+
+    try {
+      await api.deleteSong(id);
+      navigate(window.history.length > 1 ? -1 : '/library');
+    } catch (e) {
+      setError(e?.message || 'Delete failed');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (loading) {
     return (
       <div style={styles.page}>
@@ -287,24 +337,14 @@ export default function SongPage() {
 
             {!isNew && (
               <>
-                <button type="button" style={styles.secondaryBtn} onClick={fetchLyrics} disabled={saving}>
+                <button type="button" style={styles.secondaryBtn} onClick={fetchLyrics} disabled={saving || deleting}>
                   Fetch Lyrics Now
                 </button>
                 <button
                   type="button"
                   style={styles.secondaryBtn}
-                  onClick={() =>
-                    api.printPdf({
-                      songIds: [id],
-                      config: {
-                        format: 'A4',
-                        songsPerPage: 1,
-                        layout: 'fit-one-page-two-columns',
-                        includeToc: false,
-                      },
-                    })
-                  }
-                  disabled={saving}
+                  onClick={printSong}
+                  disabled={saving || deleting}
                 >
                   Print This Song
                 </button>
@@ -323,16 +363,18 @@ export default function SongPage() {
                     type="button"
                     style={styles.secondaryBtn}
                     onClick={() => navigate(`/reports/${lastReportId}`)}
+                    disabled={deleting}
                   >
                     View Fetch Report
                   </button>
                 )}
                 <button
                   type="button"
-                  style={styles.secondaryBtn}
-                  onClick={() => navigate('/reports')}
+                  style={styles.deleteBtn}
+                  onClick={deleteCurrentSong}
+                  disabled={deleting || saving}
                 >
-                  Open Reports
+                  {deleting ? 'Deleting...' : 'Delete Song'}
                 </button>
               </>
             )}
@@ -509,6 +551,15 @@ const styles = {
     border: '1px solid rgba(114, 98, 78, 0.22)',
     background: '#fff',
     color: '#3b332a',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  deleteBtn: {
+    padding: '11px 16px',
+    borderRadius: 999,
+    border: '1px solid #d5c1bb',
+    background: '#fff',
+    color: '#b03a2e',
     fontWeight: 700,
     cursor: 'pointer',
   },

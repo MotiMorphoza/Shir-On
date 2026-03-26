@@ -84,6 +84,8 @@ Related stability improvement:
 
 Verified:
 - the print engine now honors supported `songsPerPage`, TOC, margins, line spacing, and a single-song two-column lyrics layout
+- the print engine now measures page geometry plus TOC row and lyric token heights before final rendering, then paginates deterministically without probing live page overflow
+- single-song prints now choose their first column by language: Hebrew starts on the right, non-Hebrew starts on the left
 - the engine does not implement every historical print option that older UI payloads hinted at
 
 Impact:

@@ -1,5 +1,52 @@
 const BASE = import.meta.env.VITE_API_URL?.trim() || 'http://127.0.0.1:3001/api';
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function renderPrintPreview(title, message, tone = 'loading') {
+  const accent = tone === 'error' ? '#a53f2b' : '#2f6b5f';
+  const soft = tone === 'error' ? '#f5dfd8' : '#dcebe6';
+  const indicator =
+    tone === 'error'
+      ? `<div style="width:14px; height:14px; border-radius:999px; background:${accent}; box-shadow:0 0 0 6px ${soft};"></div>`
+      : `<div style="width:24px; height:24px; border-radius:999px; border:3px solid ${soft}; border-top-color:${accent}; animation:spin 0.85s linear infinite;"></div>`;
+
+  return `<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(title)}</title>
+        <style>
+          @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        </style>
+      </head>
+      <body style="margin:0; min-height:100vh; font-family: Georgia, serif; background:
+        radial-gradient(circle at top, #f8f0de 0%, #f4ecde 26%, #efe7da 55%, #ece6de 100%);
+        color:#2f261c; display:flex; align-items:center; justify-content:center; padding:28px;">
+        <div style="width:min(760px, 100%); background:rgba(255, 252, 246, 0.94); border:1px solid rgba(117, 97, 71, 0.18);
+          border-radius:28px; box-shadow:0 32px 70px rgba(71, 53, 31, 0.14); padding:28px 30px 32px;">
+          <div style="display:flex; align-items:center; gap:14px; margin-bottom:20px;">
+            ${indicator}
+            <div>
+              <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#8a775d; margin-bottom:6px;">Shir-On Print</div>
+              <h1 style="margin:0; font-size:28px; line-height:1.1; color:#2c241b;">${escapeHtml(title)}</h1>
+            </div>
+          </div>
+          <p style="margin:0; line-height:1.8; font-size:17px; color:#4a4033;">${escapeHtml(message)}</p>
+        </div>
+      </body>
+    </html>`;
+}
+
 async function request(path, options = {}) {
   const isFormData =
     typeof FormData !== 'undefined' && options.body instanceof FormData;
@@ -104,18 +151,11 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  startPlaylistImportJob: (playlistId) =>
-    request('/spotify/import/playlist/background', {
+  startSpotifyImportJob: (spotifyInput) =>
+    request('/spotify/import/background', {
       method: 'POST',
       keepalive: true,
-      body: JSON.stringify({ playlistId }),
-    }),
-
-  startAlbumImportJob: (albumId) =>
-    request('/spotify/import/album/background', {
-      method: 'POST',
-      keepalive: true,
-      body: JSON.stringify({ albumId }),
+      body: JSON.stringify({ spotifyInput }),
     }),
   getSpotifyStatus: () => request('/spotify/status'),
 
@@ -211,29 +251,59 @@ export const api = {
 
     previewWindow.document.open();
     previewWindow.document.write(
-      '<!doctype html><html><head><title>Preparing PDF...</title></head><body style="font-family: sans-serif; padding: 24px;">Preparing PDF...</body></html>'
+      renderPrintPreview(
+        'Preparing PDF...',
+        'Building the printable songbook. This can take a little while for larger libraries.',
+        'loading'
+      )
     );
     previewWindow.document.close();
 
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = `${BASE}/print/pdf`;
-    form.target = targetName;
-    form.style.display = 'none';
-
-    const payload = document.createElement('input');
-    payload.type = 'hidden';
-    payload.name = 'payload';
-    payload.value = JSON.stringify(body || {});
-    form.appendChild(payload);
-
-    document.body.appendChild(form);
-
     try {
-      form.submit();
+      const response = await fetch(`${BASE}/print/pdf`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body || {}),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(() => ({ error: response.statusText || 'Print failed' }));
+        const errorMessage = errorBody?.error || `HTTP ${response.status}`;
+
+        previewWindow.document.open();
+        previewWindow.document.write(
+          renderPrintPreview('Print Failed', errorMessage, 'error')
+        );
+        previewWindow.document.close();
+
+        throw new Error(errorMessage);
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      previewWindow.location.replace(blobUrl);
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+
       return { ok: true };
-    } finally {
-      document.body.removeChild(form);
+    } catch (error) {
+      if (!previewWindow.closed) {
+        previewWindow.document.open();
+        previewWindow.document.write(
+          renderPrintPreview(
+            'Print Failed',
+            error?.message || 'The PDF could not be prepared.',
+            'error'
+          )
+        );
+        previewWindow.document.close();
+      }
+
+      throw error;
     }
   },
 };

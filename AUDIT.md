@@ -161,9 +161,14 @@ What changed:
 - the Songbook page now defaults to all songs instead of silently filtering to print-ready only
 - the library filter now exposes `Reviewed Lyrics`
 - the duplicates page labels its merge action more honestly
+- the top navigation now places `Songbook` first and gives it a stronger visual accent than the other nav links
+- the import screen now uses the shorter `Import` title plus one Spotify input that auto-detects playlist, album, or song imports, including Spotify single-song import
+- the same Spotify import shortcut now sits inside the Library header block itself, centered under the title/action row rather than as a separate card below it; its `IMPORT` button lives in the Spotify row header, the subtitle line is removed there, and the actual Spotify job still runs and reconnects only in the Import screen instead of duplicating job UI in Library
 
 Code:
 - [frontend/src/main.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/main.jsx)
+- [frontend/src/pages/ImportPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ImportPage.jsx)
+- [backend/src/routes/spotify.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/spotify.js)
 - [frontend/src/pages/SongbookPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongbookPage.jsx)
 - [frontend/src/components/FilterBar.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/components/FilterBar.jsx)
 - [frontend/src/pages/DuplicatesPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/DuplicatesPage.jsx)
@@ -285,6 +290,7 @@ What changed:
 - added an explicit `Library` entry to the main top navigation
 - removed repeated back-to-library buttons from the individual page headers
 - aligned the Spotify connection action into the `Spotify Connection` section header row
+- removed redundant stacked page-header labels so major screens now use one stronger primary title
 
 Why it mattered:
 - repeated back buttons created visual clutter and made the main navigation feel incomplete
@@ -299,6 +305,44 @@ Code:
 - [frontend/src/pages/ReportsPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ReportsPage.jsx)
 - [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
 - [frontend/src/pages/SongbookPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongbookPage.jsx)
+
+### 23. Printed songbook pages did not behave like a two-column book
+
+Status: `Fixed`
+
+What changed:
+- printed TOC pages now render in two columns
+- two-song print pages now place songs side by side as two columns on the page
+- single-song print pages now use a two-column page flow, so longer songs can continue from the first column into the second
+- long songs now step down through smaller print font presets so one song still stays within one physical page
+- printed pages now render page numbers, and TOC entries include those song page numbers
+- Hebrew titles, artists, metadata, TOC entries, and lyrics keep RTL alignment inside the PDF
+- Hebrew single-song pages now start from the right column first
+- non-Hebrew single-song pages now start from the left column first
+- the print engine now measures page geometry plus TOC row and lyric token heights in Puppeteer, then assigns pages and columns deterministically in Node before the final render
+- print heuristics are now stricter about pairing two songs on one page, and TOC spacing is tighter to reduce half-empty columns and empty pages
+- TOC pages now use explicit right/left column assignment instead of automatic browser column balancing, to reduce dead space and extra TOC pages
+- TOC rows now flow continuously through right then left columns without forcing a new artist section to start at a fresh column
+- print preview now opens a tab immediately but fetches the PDF from the app first, so backend print failures can render as readable errors instead of a stuck form-post preview tab
+- explicit right/left print columns now pin themselves to the first grid row, preventing Chrome from laying the left column into a second row and making the page look split into four quadrants
+- the working print format is now fixed in docs and code as a two-column book spread, with Hebrew songs starting from the right column, non-Hebrew songs from the left, and Hebrew metadata blocks staying right-aligned even when artist names are written in English
+- print page margins, footer space, and in-song line spacing were tightened slightly again after the first working layout to reduce unused top/bottom space and fit more lyric lines per page
+- printed TOC artist headings now apply explicit RTL/LTR alignment and edge anchoring as headings, so Hebrew artist names stay right-aligned in the contents pages while English names remain left-aligned
+- the print preparation screen now shows one concise loading message instead of two near-duplicate status lines
+- the print error screen now also keeps only the core error message instead of adding an extra explanatory footer line
+- digital songbook TOC jumps now respect the sticky header height, so song titles and `Open` links stay visible after navigation
+- printed song pages now include a fixed link back to the start of the PDF table of contents
+- the styled print-preview waiting screen is back, so the pre-opened tab now looks intentional instead of like a blank fallback page
+- the Library and Songbook pages now remember their last chosen playlist/filter scope after navigation by persisting view state in local storage
+- long printed songs now re-measure both columns after the initial split and move trailing lines into the next column when needed, so footer-adjacent lines do not get clipped at the bottom of the page
+- digital songbook TOC artist headings now align by language, and opening a song from the songbook now preserves both the current song position and the TOC rail position for the return trip from the editor
+- the top-nav `Songbook` entry now resets the digital songbook to its beginning, so a deliberate menu-open does not restore an older reading position
+
+Why it mattered:
+- the old print layout behaved more like stacked cards than a real book spread, and live overflow probing was still letting Chrome create zig-zag TOC flow and dead space even after the first print rewrite
+
+Code:
+- [backend/src/print/engine.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/print/engine.js)
 - [frontend/src/api/client.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/api/client.js)
 
 ### 17. Print-ready state created extra friction in the live UI
@@ -345,7 +389,7 @@ Code:
 Status: `Fixed`
 
 What changed:
-- `Import` nav label was changed to `Import Playlist`
+- `Import` nav label was shortened to `Import`
 - year fields now support typed input plus a scrollable year suggestion list
 - print opening now submits directly into a dedicated preview tab instead of relying on a delayed fetch/blob handoff
 - the library selection bar no longer includes the extra collection chooser block
@@ -387,6 +431,50 @@ Why it mattered:
 Code:
 - [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
 
+### 25. Song editor action stack still kept a low-value generic reports shortcut
+
+Status: `Fixed`
+
+What changed:
+- replaced the generic `Open Reports` action in the song editor with a direct `Delete Song` button
+- deletion now asks for confirmation and returns to the previous screen when possible, or the library as a fallback
+
+Why it mattered:
+- the edit screen is a per-song workflow, so a direct destructive action is more useful there than a generic jump to the full reports area
+
+Code:
+- [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+
+### 22. Import flow front-loaded too much Spotify connection chrome
+
+Status: `Fixed`
+
+What changed:
+- removed the separate `Spotify Connection` heading block and explanatory connect text from the top of the import screen
+- moved the Spotify connect/disconnect action into the main import page header on the right
+- pinned the Spotify action group to the far right edge of the header instead of letting it sit centered when extra width was available
+
+Why it mattered:
+- the extra connection block pushed the actual import controls down and repeated information that the primary action button already communicated
+
+Code:
+- [frontend/src/pages/ImportPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/ImportPage.jsx)
+
+### 24. Printed TOC and page wrappers still had layout ambiguity
+
+Status: `Reduced`
+
+What changed:
+- TOC columns now sit in explicit right/left grid slots instead of depending on container direction heuristics
+- printed page wrappers now use a smaller fixed content height to reduce phantom blank pages after full content pages
+- long song pages now render through explicit right/left column containers instead of relying on CSS multi-column flow
+
+Why it mattered:
+- the right column must fill before the left in a predictable way, and over-tall page wrappers were a likely source of extra blank pages in the PDF
+
+Code:
+- [backend/src/print/engine.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/print/engine.js)
+
 ---
 
 ## Remaining priorities
@@ -394,6 +482,7 @@ Code:
 ### Critical
 
 - `Reduced`: keep narrowing print configuration so unsupported options cannot drift back into the frontend
+- `Open`: simplify the overlap between `Fetch Lyrics` and `Jobs` so users see `Fetch` as the action screen and `Jobs` as history/monitoring, not two competing places to manage the same work
 
 ### High
 

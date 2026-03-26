@@ -12,6 +12,20 @@ import ReportsPage from './pages/ReportsPage.jsx';
 import SongbookPage from './pages/SongbookPage.jsx';
 import SongPage from './pages/SongPage.jsx';
 
+const SONGBOOK_NAV_RESET_KEY = 'shir_on_songbook_nav_reset';
+
+function openSongbookFresh() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(SONGBOOK_NAV_RESET_KEY, '1');
+  } catch {
+    // Ignore sessionStorage failures in restricted contexts.
+  }
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -25,11 +39,14 @@ function App() {
           </div>
 
           <div style={navLinks}>
+            <Link to="/songbook" style={songbookNavLink} onClick={openSongbookFresh}>
+              Songbook
+            </Link>
             <Link to="/" style={navLink}>
               Library
             </Link>
             <Link to="/import" style={navLink}>
-              Import Playlist
+              Import
             </Link>
             <Link to="/lyrics-run" style={navLink}>
               Fetch Lyrics
@@ -39,9 +56,6 @@ function App() {
             </Link>
             <Link to="/duplicates" style={navLink}>
               Duplicates
-            </Link>
-            <Link to="/songbook" style={navLink}>
-              Songbook
             </Link>
             <Link to="/collections" style={navLink}>
               Collections
@@ -128,6 +142,16 @@ const navLink = {
   fontSize: 14,
   padding: '8px 10px',
   borderRadius: 999,
+};
+
+const songbookNavLink = {
+  ...navLink,
+  color: '#8a5a1f',
+  fontFamily: 'Georgia, "Times New Roman", serif',
+  fontSize: 18,
+  fontWeight: 800,
+  letterSpacing: '0.02em',
+  padding: '7px 12px',
 };
 
 const ctaLink = {
