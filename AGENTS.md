@@ -53,6 +53,11 @@ If there is a conflict:
 2. local runtime data beats assumptions
 3. update docs after inspection
 
+Documentation maintenance rule:
+- every material code change must update the relevant `.md` files in the same work session
+- `AUDIT.md` must be kept in sync with major findings, fixes applied, and remaining priorities
+- do not leave code and docs knowingly divergent for the user to reconcile later
+
 ---
 
 ## How an agent should work in this repo
@@ -102,6 +107,13 @@ Especially for:
 - provider-specific parser failures
 - import results and skipped rows
 
+### 7. Treat documentation updates as part of done
+
+When a change affects behavior, risks, setup, UX, or architecture:
+- update the nearest source doc such as `README.md`, `ARCHITECTURE.md`, `BOOTSTRAP.md`, or `KNOWN_ISSUES.md`
+- update `AUDIT.md` when the change closes, reduces, or re-prioritizes an audit finding
+- note whether the documented statement is **Verified** or **Inferred** when that distinction matters
+
 ---
 
 ## Verified implementation facts
@@ -114,6 +126,14 @@ Especially for:
 - schema includes songs, lyrics, tags, collections, and print sets
 - provider inventory includes `zemereshet`, `shironet`, `nli`, `tab4u`, `google-sites`, `lrclib.net`, and `lyrics.ovh`
 - report files exist in volume in the local workspace
+- the UI now includes a shared `Back to Library` button pattern across major pages
+- the digital songbook can be scoped to one playlist
+- reports can be cleared from the UI without deleting the SQLite library
+- the lyrics and Spotify import flows reconnect to the last tracked background job from the browser, but the backend job registry is still memory-backed
+- the Song and Collections screens now share the newer card-based UI language used across the rest of the app
+- duplicate background jobs for the same lyrics scope or Spotify source are now intentionally reused instead of duplicated
+- duplicate song merges now preserve playlist, collection, print-set, and tag membership before removing merged-away rows
+- PDF generation now honors single-song pages and two-column lyrics for the supported print layouts, instead of always forcing two songs per page
 
 ---
 

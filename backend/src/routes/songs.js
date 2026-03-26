@@ -11,156 +11,45 @@ import {
   findDuplicates,
   mergeSongs,
 } from '../services/songService.js';
-import { fetchLyricsWithReport } from '../providers/lyrics/index.js';
-import { saveReport } from '../services/reportService.js';
+import {
+  fetchLyricsForSongId,
+  fetchLyricsForSongs,
+} from '../services/lyricsRunService.js';
+import { createBatchReport } from '../services/reportService.js';
+import {
+  createBackgroundJob,
+  findActiveJobByMeta,
+} from '../services/jobService.js';
 
 const router = Router();
 
-function cleanWhitespace(value = '') {
-  return String(value || '').replace(/\s+/g, ' ').trim();
-}
-
-function cleanTitleForLyrics(title = '') {
-  let value = cleanWhitespace(title);
-
-  value = value
-    .replace(
-      /\s*-\s*(remastered|remaster|live|edit|version|mono|stereo|acoustic|radio edit|deluxe version)\b.*$/i,
-      ''
-    )
-    .replace(
-      /\s*\((remastered|remaster|live|edit|version|mono|stereo|acoustic|radio edit|deluxe version)[^)]*\)\s*$/i,
-      ''
-    )
-    .replace(
-      /\s*\[(remastered|remaster|live|edit|version|mono|stereo|acoustic|radio edit|deluxe version)[^\]]*\]\s*$/i,
-      ''
-    )
-    .replace(/\s*-\s*from\b.*$/i, '')
-    .replace(/\s*-\s*feat\b.*$/i, '')
-    .replace(/\s*\((feat|ft|featuring)\.?\s+[^)]*\)\s*$/i, '')
-    .replace(/\s*\[(feat|ft|featuring)\.?\s+[^\]]*\]\s*$/i, '');
-
-  return cleanWhitespace(value);
-}
-
-function cleanArtistForLyrics(artist = '') {
-  let value = cleanWhitespace(artist);
-
-  if (!value) return '';
-
-  value = value
-    .split(/\s*(?:,|&| x | X |\/| with | ו | and )\s*/i)[0]
-    .trim();
-
-  value = value
-    .replace(/\s*\((feat|ft|featuring)\.?\s+[^)]*\)\s*$/i, '')
-    .replace(/\s*\[(feat|ft|featuring)\.?\s+[^\]]*\]\s*$/i, '')
-    .replace(/\s*-\s*(official|live|acoustic|remastered)\b.*$/i, '');
-
-  return cleanWhitespace(value);
-}
-
-function buildLyricsQueryVariants(title, artist) {
-  const originalTitle = cleanWhitespace(title);
-  const originalArtist = cleanWhitespace(artist);
-  const cleanTitle = cleanTitleForLyrics(originalTitle);
-  const cleanArtist = cleanArtistForLyrics(originalArtist);
-
-  const variants = [
-    { title: cleanTitle, artist: cleanArtist, label: 'clean_title_clean_artist' },
-    { title: cleanTitle, artist: '', label: 'clean_title_only' },
-    { title: originalTitle, artist: cleanArtist, label: 'original_title_clean_artist' },
-    { title: originalTitle, artist: '', label: 'original_title_only' },
-    { title: cleanTitle, artist: originalArtist, label: 'clean_title_original_artist' },
-    { title: originalTitle, artist: originalArtist, label: 'original_title_original_artist' },
-  ];
-
-  const seen = new Set();
-
-  return variants.filter((variant) => {
-    const t = cleanWhitespace(variant.title);
-    const a = cleanWhitespace(variant.artist);
-    if (!t) return false;
-
-    const key = `${t}|||${a}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-
-    variant.title = t;
-    variant.artist = a;
-    return true;
-  });
-}
-
-async function fetchLyricsWithFallbacks(song) {
-  const queryVariants = buildLyricsQueryVariants(song.title, song.artist_name);
-
-  let bestResult = null;
-  let mergedAttempts = [];
-  let winnerVariant = null;
-
-  for (const variant of queryVariants) {
-    console.log(
-      `[lyrics-route] trying query_variant=${variant.label} title="${variant.title}" artist="${variant.artist}"`
-    );
-
-    const { result, attempts } = await fetchLyricsWithReport(variant.title, variant.artist);
-
-    mergedAttempts.push(
-      {
-        provider: `query:${variant.label}`,
-        status: 'query_variant',
-        source: variant.label,
-      },
-      ...(Array.isArray(attempts)
-        ? attempts.map((attempt) => ({
-            ...attempt,
-            query_title: variant.title,
-            query_artist: variant.artist,
-            query_variant: variant.label,
-          }))
-        : [])
-    );
-
-    if (result?.lyrics_text) {
-      winnerVariant = variant;
-      return {
-        result,
-        attempts: mergedAttempts,
-        winnerVariant,
-        queryVariants,
-      };
-    }
-
-    if (result?.confidence_score && (!bestResult || result.confidence_score > bestResult.confidence_score)) {
-      bestResult = result;
-      winnerVariant = variant;
-    }
+function buildLyricsRunLabel(entries = []) {
+  if (entries.length === 1) {
+    const entry = entries[0];
+    return `${entry.original_artist || ''} - ${entry.original_title || ''}`.trim();
   }
 
-  return {
-    result: bestResult,
-    attempts: mergedAttempts,
-    winnerVariant,
-    queryVariants,
-  };
+  return `Lyrics fetch run (${entries.length} songs)`;
 }
 
 router.get('/', (req, res) => {
   try {
+    const ids =
+      typeof req.query.ids === 'string' && req.query.ids.trim()
+        ? req.query.ids
+            .split(',')
+            .map((value) => value.trim())
+            .filter(Boolean)
+        : [];
+
     const songs = getSongs({
+      ids,
       search: req.query.search,
       artist: req.query.artist,
       album: req.query.album,
       year: req.query.year,
       status: req.query.status,
-      printReady:
-        req.query.printReady === 'true'
-          ? true
-          : req.query.printReady === 'false'
-            ? false
-            : undefined,
+      playlistId: req.query.playlistId,
       sort: req.query.sort,
       page: req.query.page,
       limit: req.query.limit,
@@ -177,6 +66,134 @@ router.get('/duplicates', (_req, res) => {
     res.json(findDuplicates());
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Failed to find duplicates' });
+  }
+});
+
+router.post('/fetch-lyrics-run', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids)
+      ? req.body.ids.map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+
+    if (ids.length === 0) {
+      return res.status(400).json({ error: 'Missing song IDs' });
+    }
+
+    const run = await fetchLyricsForSongs(ids, { persist: true });
+    const report = createBatchReport({
+      type: 'lyrics_fetch',
+      subtype: 'batch_run',
+      source_type: 'lyrics_fetch',
+      source_id: ids.join(','),
+      started_at: run.started_at,
+      finished_at: run.finished_at,
+      label: buildLyricsRunLabel(run.entries),
+      entries: run.entries,
+      meta: {
+        requested_song_ids: ids,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      report_id: report.id,
+      report,
+      summary: report.summary,
+      entries: report.entries,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: err?.message || 'Lyrics fetch run failed',
+    });
+  }
+});
+
+router.post('/fetch-lyrics-run/background', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids)
+      ? req.body.ids.map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+    const normalizedIds = [...ids].sort();
+
+    if (ids.length === 0) {
+      return res.status(400).json({ error: 'Missing song IDs' });
+    }
+
+    const existingJob = findActiveJobByMeta(
+      'lyrics_fetch_run',
+      {
+        requested_song_ids: normalizedIds,
+      },
+      ['requested_song_ids']
+    );
+
+    if (existingJob) {
+      return res.status(200).json({
+        ...existingJob,
+        reused: true,
+      });
+    }
+
+    const job = createBackgroundJob({
+      type: 'lyrics_fetch_run',
+      label: `Lyrics fetch run (${ids.length} songs)`,
+      meta: {
+        requested_song_ids: normalizedIds,
+      },
+      total: ids.length,
+      run: async (controls) => {
+        controls.setPhase('fetching_lyrics', `Fetching lyrics for ${ids.length} songs`);
+
+        const run = await fetchLyricsForSongs(ids, {
+          persist: true,
+          onEntry(entry, state) {
+            controls.setCurrent(
+              `${entry.original_artist || ''} - ${entry.original_title || ''}`.trim()
+            );
+            controls.addEntry(entry);
+            controls.updateProgress({
+              total: ids.length,
+              completed: state.entries.length,
+              succeeded: state.entries.filter((item) => item.result === 'success').length,
+              failed: state.entries.filter((item) => item.result === 'fail').length,
+            });
+          },
+        });
+
+        const report = createBatchReport({
+          type: 'lyrics_fetch',
+          subtype: 'batch_run',
+          source_type: 'lyrics_fetch',
+          source_id: ids.join(','),
+          started_at: run.started_at,
+          finished_at: run.finished_at,
+          label: buildLyricsRunLabel(run.entries),
+          entries: run.entries,
+          meta: {
+            requested_song_ids: ids,
+          },
+        });
+
+        controls.complete({
+          summary: report.summary || {},
+          report_id: report.id,
+          entries: run.entries,
+          result: {
+            ok: true,
+            report_id: report.id,
+            report,
+            summary: report.summary,
+            entries: run.entries,
+          },
+        });
+      },
+    });
+
+    return res.status(202).json(job);
+  } catch (err) {
+    return res.status(500).json({
+      error: err?.message || 'Background lyrics fetch run failed',
+    });
   }
 });
 
@@ -230,84 +247,59 @@ router.put('/:id/lyrics', (req, res) => {
   }
 });
 
+router.post('/:id/fetch-lyrics-preview', async (req, res) => {
+  try {
+    const result = await fetchLyricsForSongId(req.params.id, { persist: false });
+
+    return res.json({
+      fetched: result.fetched,
+      song: result.song,
+      entry: result.entry,
+      provider: result.provider,
+      confidence_score: result.confidence_score,
+      query_variant: result.query_variant,
+      query_title: result.query_title,
+      query_artist: result.query_artist,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: err?.message || 'Lyrics fetch failed',
+    });
+  }
+});
+
 router.post('/:id/fetch-lyrics', async (req, res) => {
   try {
-    const song = getSongById(req.params.id);
+    const result = await fetchLyricsForSongId(req.params.id, { persist: true });
 
-    if (!song) {
-      return res.status(404).json({ error: 'Song not found' });
-    }
-
-    const { result, attempts, winnerVariant, queryVariants } = await fetchLyricsWithFallbacks(song);
-
-    let updatedSong = song;
-    let fetched = false;
-
-    if (result?.lyrics_text) {
-      updatedSong = saveLyrics(req.params.id, {
-        text: result.lyrics_text,
-        source: result.source || 'auto',
-        confidenceScore: result.confidence_score || 0,
-        isVerified: 0,
-      });
-      fetched = true;
-    }
-
-    const saved = saveReport({
+    const report = createBatchReport({
       type: 'lyrics_fetch',
-      subtype: 'single_song',
+      subtype: 'single_song_run',
       source_type: 'lyrics_fetch',
       source_id: req.params.id,
-      title: song.title || '',
-      artist: song.artist_name || '',
-      summary: {
-        fetched,
-        provider: result?.source || '',
-        confidence_score: Number(result?.confidence_score || 0),
-        attempts_count: Array.isArray(attempts) ? attempts.length : 0,
-        query_variant: winnerVariant?.label || '',
-        query_title: winnerVariant?.title || '',
-        query_artist: winnerVariant?.artist || '',
-      },
-      rows: Array.isArray(attempts)
-        ? attempts.map((attempt) => ({
-            title: song.title || '',
-            artist: song.artist_name || '',
-            album: song.album_title || '',
-            action:
-              attempt.status === 'ok'
-                ? 'imported'
-                : attempt.status === 'error'
-                  ? 'error'
-                  : 'skipped',
-            reason: attempt.status,
-            error: attempt.error || '',
-            provider: attempt.provider,
-            confidence_score: attempt.confidence_score || null,
-            query_variant: attempt.query_variant || '',
-            query_title: attempt.query_title || '',
-            query_artist: attempt.query_artist || '',
-          }))
-        : [],
-      report: {
-        fetched,
-        result: result || null,
-        attempts: attempts || [],
-        query_variants: queryVariants || [],
-        winner_variant: winnerVariant || null,
+      started_at: result.started_at,
+      finished_at: result.finished_at,
+      title: result.entry.original_title,
+      artist: result.entry.original_artist,
+      label: buildLyricsRunLabel([result.entry]),
+      entries: [result.entry],
+      meta: {
+        requested_song_ids: [req.params.id],
       },
     });
 
     return res.json({
-      fetched,
-      song: updatedSong,
-      report_id: saved.id,
-      attempts: attempts || [],
-      provider: result?.source || null,
-      confidence_score: result?.confidence_score || null,
-      query_variant: winnerVariant?.label || null,
-      query_title: winnerVariant?.title || null,
-      query_artist: winnerVariant?.artist || null,
+      fetched: result.fetched,
+      song: result.song,
+      report_id: report.id,
+      report,
+      provider: result.provider,
+      confidence_score: result.confidence_score,
+      duration_ms: result.entry.duration_ms,
+      query_variant: result.query_variant,
+      query_title: result.query_title,
+      query_artist: result.query_artist,
+      entry: result.entry,
     });
   } catch (err) {
     return res.status(500).json({

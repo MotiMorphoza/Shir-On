@@ -1,16 +1,31 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
+import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
 const STATUS_LABELS = {
-  missing: '❌ Missing',
-  auto: '🤖 Auto',
-  manual: '✏️ Manual',
-  reviewed: '✅ Reviewed',
+  missing: 'No Lyrics',
+  auto: 'Has Lyrics',
+  manual: 'Has Lyrics',
+  reviewed: 'Has Lyrics',
 };
 
 function isProbablyHebrew(text) {
   return /[\u0590-\u05FF]/.test(String(text || ''));
+}
+
+function parseTags(value) {
+  return String(value || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function buildYearOptions() {
+  return Array.from(
+    { length: new Date().getFullYear() - 1899 },
+    (_, index) => String(new Date().getFullYear() - index)
+  );
 }
 
 export default function SongPage() {
@@ -26,15 +41,18 @@ export default function SongPage() {
     year: '',
   });
   const [lyrics, setLyrics] = useState('');
+  const [tagsText, setTagsText] = useState('');
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [lastReportId, setLastReportId] = useState('');
 
-  const isHebrew = useMemo(() => {
-    return isProbablyHebrew(form.title) || isProbablyHebrew(lyrics);
-  }, [form.title, lyrics]);
+  const isHebrew = useMemo(
+    () => isProbablyHebrew(form.title) || isProbablyHebrew(lyrics),
+    [form.title, lyrics]
+  );
+  const yearOptions = useMemo(() => buildYearOptions(), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,6 +67,7 @@ export default function SongPage() {
           year: '',
         });
         setLyrics('');
+        setTagsText('');
         setLoading(false);
         setError('');
         return;
@@ -59,24 +78,27 @@ export default function SongPage() {
       setMsg('');
 
       try {
-        const s = await api.getSong(id);
+        const loadedSong = await api.getSong(id);
 
-        if (!cancelled) {
-          if (!s) {
-            setError('Song not found');
-            setSong(null);
-            return;
-          }
-
-          setSong(s);
-          setForm({
-            title: s.title || '',
-            artist: s.artist_name || '',
-            album: s.album_title || '',
-            year: s.year || '',
-          });
-          setLyrics(s.lyrics?.text || '');
+        if (cancelled) {
+          return;
         }
+
+        if (!loadedSong) {
+          setError('Song not found');
+          setSong(null);
+          return;
+        }
+
+        setSong(loadedSong);
+        setForm({
+          title: loadedSong.title || '',
+          artist: loadedSong.artist_name || '',
+          album: loadedSong.album_title || '',
+          year: loadedSong.year || '',
+        });
+        setLyrics(loadedSong.lyrics?.text || '');
+        setTagsText(Array.isArray(loadedSong.tags) ? loadedSong.tags.join(', ') : '');
       } catch (e) {
         if (!cancelled) {
           setError(e?.message || 'Failed to load song');
@@ -96,7 +118,7 @@ export default function SongPage() {
     };
   }, [id, isNew]);
 
-  const save = async () => {
+  async function save() {
     setSaving(true);
     setMsg('');
     setError('');
@@ -109,6 +131,10 @@ export default function SongPage() {
           await api.saveLyrics(created.id, { text: lyrics });
         }
 
+        if (parseTags(tagsText).length > 0) {
+          await api.setTags(created.id, parseTags(tagsText));
+        }
+
         navigate(`/songs/${created.id}`);
         return;
       }
@@ -119,20 +145,25 @@ export default function SongPage() {
         await api.saveLyrics(id, { text: lyrics });
       }
 
+      if (tagsText !== (Array.isArray(song?.tags) ? song.tags.join(', ') : '')) {
+        await api.setTags(id, parseTags(tagsText));
+      }
+
       const updated = await api.getSong(id);
       setSong(updated);
       setLyrics(updated?.lyrics?.text || lyrics);
-      setMsg('Saved.');
+      setTagsText(Array.isArray(updated?.tags) ? updated.tags.join(', ') : tagsText);
+      setMsg('Song saved.');
     } catch (e) {
       setError(e?.message || 'Save failed');
     } finally {
       setSaving(false);
     }
-  };
+  }
 
-  const fetchLyrics = async () => {
+  async function fetchLyrics() {
     setSaving(true);
-    setMsg('Fetching…');
+    setMsg('Fetching lyrics...');
     setError('');
     setLastReportId('');
 
@@ -156,37 +187,13 @@ export default function SongPage() {
     } finally {
       setSaving(false);
     }
-  };
-
-  const togglePrintReady = async () => {
-    if (!song) {
-      return;
-    }
-
-    setSaving(true);
-    setMsg('');
-    setError('');
-
-    try {
-      const updated = await api.updateSong(id, {
-        is_print_ready: song.is_print_ready ? 0 : 1,
-      });
-      setSong(updated);
-      setMsg(updated?.is_print_ready ? 'Marked print ready.' : 'Unmarked print ready.');
-    } catch (e) {
-      setError(e?.message || 'Failed to update print-ready status');
-    } finally {
-      setSaving(false);
-    }
-  };
+  }
 
   if (loading) {
     return (
       <div style={styles.page}>
-        <button type="button" style={styles.back} onClick={() => navigate('/')}>
-          ← Library
-        </button>
-        <p style={styles.loading}>Loading song…</p>
+        <BackToLibraryButton />
+        <p style={styles.info}>Loading song...</p>
       </div>
     );
   }
@@ -194,261 +201,383 @@ export default function SongPage() {
   if (!isNew && error && !song) {
     return (
       <div style={styles.page}>
-        <button type="button" style={styles.back} onClick={() => navigate('/')}>
-          ← Library
-        </button>
+        <BackToLibraryButton />
         <p style={styles.error}>{error}</p>
       </div>
     );
   }
 
+  const statusLabel = STATUS_LABELS[song?.lyrics_status] || song?.lyrics_status || '-';
+  const artistName = song?.artist_name || form.artist || '-';
+  const albumName = song?.album_title || form.album || 'Single';
+  const metaParts = [albumName, form.year || song?.year || ''].filter(Boolean);
+
   return (
     <div style={styles.page}>
-      <button type="button" style={styles.back} onClick={() => navigate('/')}>
-        ← Library
-      </button>
+      <header style={styles.header}>
+        <div>
+          <p style={styles.eyebrow}>{isNew ? 'Library / New Song' : 'Library / Song'}</p>
+          <h1
+            style={{
+              ...styles.title,
+              direction: isHebrew ? 'rtl' : 'ltr',
+              textAlign: isHebrew ? 'right' : 'left',
+            }}
+          >
+            {isNew ? 'New Song' : song?.title || 'Song'}
+          </h1>
+          <p style={styles.subTitle}>
+            {artistName} {metaParts.length ? `| ${metaParts.join(' | ')}` : ''}
+          </p>
+        </div>
 
-      <h2
-        style={{
-          ...styles.songTitle,
-          direction: isHebrew ? 'rtl' : 'ltr',
-          textAlign: isHebrew ? 'right' : 'left',
-        }}
-      >
-        {isNew ? 'New Song' : song?.title || 'Song'}
-      </h2>
+        <div style={styles.headerActions}>
+          <BackToLibraryButton />
+        </div>
+      </header>
 
       {!isNew && song && (
-        <div style={styles.meta}>
-          <span>
-            Status: <strong>{STATUS_LABELS[song.lyrics_status] || song.lyrics_status || '—'}</strong>
-          </span>
-          <span>
-            Print ready: <strong>{song.is_print_ready ? 'Yes' : 'No'}</strong>
-          </span>
-          <span>
-            Spotify:{' '}
-            <strong>
-              {song.spotify_url ? (
-                <a
-                  href={song.spotify_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={styles.spotifyLink}
-                >
-                  Open
-                </a>
-              ) : (
-                '—'
-              )}
-            </strong>
-          </span>
+        <div style={styles.summaryGrid}>
+          <div style={styles.summaryCard}>
+            <strong>{statusLabel}</strong>
+            <span>Lyrics status</span>
+          </div>
+          <div style={styles.summaryCard}>
+            <strong>{song.spotify_url ? 'Linked' : 'Not Linked'}</strong>
+            <span>Spotify source</span>
+          </div>
+          <div style={styles.summaryCard}>
+            <strong>{Array.isArray(song.tags) ? song.tags.length : 0}</strong>
+            <span>Tags</span>
+          </div>
         </div>
       )}
 
-      <div style={styles.grid}>
-        {[
-          ['Title', 'title', 'text'],
-          ['Artist', 'artist', 'text'],
-          ['Album', 'album', 'text'],
-          ['Year', 'year', 'number'],
-        ].map(([label, key, type]) => (
-          <label key={key} style={styles.label}>
-            {label}
-            <input
-              style={styles.input}
-              type={type}
-              value={form[key] || ''}
-              onChange={(e) =>
-                setForm((prev) => ({
-                  ...prev,
-                  [key]: e.target.value,
-                }))
-              }
-            />
-          </label>
-        ))}
-      </div>
+      {msg && <p style={styles.success}>{msg}</p>}
+      {error && <p style={styles.error}>{error}</p>}
 
-      <label style={{ ...styles.label, display: 'block', marginTop: 16 }}>
-        Lyrics
-        <textarea
-          dir={isHebrew ? 'rtl' : 'ltr'}
-          style={{
-            ...styles.textarea,
-            direction: isHebrew ? 'rtl' : 'ltr',
-            textAlign: isHebrew ? 'right' : 'left',
-          }}
-          value={lyrics}
-          onChange={(e) => setLyrics(e.target.value)}
-          placeholder="Paste or type lyrics here…"
-        />
-      </label>
+      <div style={styles.layout}>
+        <section style={styles.editorCard}>
+          <div style={styles.sectionHeader}>
+            <div>
+              <h2 style={styles.sectionTitle}>Song Details</h2>
+              <p style={styles.sectionHint}>Edit the core metadata stored in the library.</p>
+            </div>
+          </div>
 
-      <div style={styles.btnRow}>
-        <button type="button" style={styles.primary} onClick={save} disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </button>
+          <div style={styles.formGrid}>
+            {[
+              ['Title', 'title', 'text'],
+              ['Artist', 'artist', 'text'],
+              ['Album', 'album', 'text'],
+              ['Year', 'year', 'text'],
+            ].map(([label, key, type]) => (
+              <label key={key} style={styles.label}>
+                <span style={styles.labelText}>{label}</span>
+                <input
+                  style={styles.input}
+                  type={type}
+                  inputMode={key === 'year' ? 'numeric' : undefined}
+                  list={key === 'year' ? 'song-year-options' : undefined}
+                  value={form[key] || ''}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      [key]: e.target.value,
+                    }))
+                  }
+              />
+            </label>
+          ))}
 
-        {!isNew && (
-          <>
-            <button
-              type="button"
-              style={styles.secondary}
-              onClick={fetchLyrics}
-              disabled={saving}
-            >
-              Auto-fetch Lyrics
+            <datalist id="song-year-options">
+              {yearOptions.map((year) => (
+                <option key={year} value={year} />
+              ))}
+            </datalist>
+
+            <label style={styles.labelWide}>
+              <span style={styles.labelText}>Tags</span>
+              <input
+                style={styles.input}
+                type="text"
+                value={tagsText}
+                onChange={(e) => setTagsText(e.target.value)}
+                placeholder="Comma-separated tags"
+              />
+            </label>
+          </div>
+        </section>
+
+        <aside style={styles.sidebarCard}>
+          <h2 style={styles.sectionTitle}>Actions</h2>
+          <div style={styles.actionStack}>
+            <button type="button" style={styles.primaryBtn} onClick={save} disabled={saving}>
+              {saving ? 'Saving...' : 'Save Song'}
             </button>
 
-            <button
-              type="button"
-              style={styles.secondary}
-              onClick={togglePrintReady}
-              disabled={saving}
-            >
-              {song?.is_print_ready ? 'Unmark Print Ready' : 'Mark Print Ready'}
-            </button>
-
-            <button
-              type="button"
-              style={{ ...styles.secondary, background: '#27ae60', color: '#fff' }}
-              onClick={() =>
-                api.printPdf({
-                  songIds: [id],
-                  config: {
-                    format: 'A4',
-                    layout: 'fit-one-page-two-columns',
-                    includeToc: false,
-                    titleSeparatePage: false,
-                    autoFontSize: true,
-                  },
-                })
-              }
-              disabled={saving}
-            >
-              Print This Song
-            </button>
-
-            {lastReportId && (
-              <button
-                type="button"
-                style={styles.secondary}
-                onClick={() => navigate(`/reports/${lastReportId}`)}
-              >
-                View Fetch Report
-              </button>
+            {!isNew && (
+              <>
+                <button type="button" style={styles.secondaryBtn} onClick={fetchLyrics} disabled={saving}>
+                  Fetch Lyrics Now
+                </button>
+                <button
+                  type="button"
+                  style={styles.secondaryBtn}
+                  onClick={() =>
+                    api.printPdf({
+                      songIds: [id],
+                      config: {
+                        format: 'A4',
+                        songsPerPage: 1,
+                        layout: 'fit-one-page-two-columns',
+                        includeToc: false,
+                      },
+                    })
+                  }
+                  disabled={saving}
+                >
+                  Print This Song
+                </button>
+                {song?.spotify_url && (
+                  <a
+                    href={song.spotify_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={styles.linkButton}
+                  >
+                    Open in Spotify
+                  </a>
+                )}
+                {lastReportId && (
+                  <button
+                    type="button"
+                    style={styles.secondaryBtn}
+                    onClick={() => navigate(`/reports/${lastReportId}`)}
+                  >
+                    View Fetch Report
+                  </button>
+                )}
+                <button
+                  type="button"
+                  style={styles.secondaryBtn}
+                  onClick={() => navigate('/reports')}
+                >
+                  Open Reports
+                </button>
+              </>
             )}
-
-            <button
-              type="button"
-              style={styles.secondary}
-              onClick={() => navigate('/reports')}
-            >
-              All Reports
-            </button>
-          </>
-        )}
+          </div>
+        </aside>
       </div>
 
-      {msg && <p style={{ color: '#27ae60', marginTop: 8 }}>{msg}</p>}
-      {error && song && <p style={styles.error}>{error}</p>}
+      <section style={styles.lyricsCard}>
+        <div style={styles.sectionHeader}>
+          <div>
+            <h2 style={styles.sectionTitle}>Lyrics</h2>
+            <p style={styles.sectionHint}>Paste text manually or refine what the fetch flow brings in.</p>
+          </div>
+        </div>
+
+        <label style={styles.lyricsLabel}>
+          <textarea
+            dir={isHebrew ? 'rtl' : 'ltr'}
+            style={{
+              ...styles.textarea,
+              direction: isHebrew ? 'rtl' : 'ltr',
+              textAlign: isHebrew ? 'right' : 'left',
+            }}
+            value={lyrics}
+            onChange={(e) => setLyrics(e.target.value)}
+            placeholder="Paste or type lyrics here..."
+          />
+        </label>
+      </section>
     </div>
   );
 }
 
 const styles = {
   page: {
-    maxWidth: 800,
+    maxWidth: 1240,
     margin: '0 auto',
-    padding: '24px 16px',
+    padding: '28px 20px 48px',
   },
-  back: {
-    background: 'none',
-    border: 'none',
-    color: '#3498db',
-    cursor: 'pointer',
-    padding: 0,
-    marginBottom: 12,
-    fontSize: 14,
-  },
-  songTitle: {
-    marginBottom: 4,
-  },
-  meta: {
+  header: {
     display: 'flex',
-    gap: 24,
-    color: '#555',
-    fontSize: 13,
-    marginBottom: 16,
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 16,
+    marginBottom: 20,
     flexWrap: 'wrap',
   },
-  spotifyLink: {
-    color: '#1db954',
-    textDecoration: 'none',
-    fontWeight: 600,
+  eyebrow: {
+    margin: 0,
+    color: '#8a6f3f',
+    textTransform: 'uppercase',
+    letterSpacing: '0.12em',
+    fontSize: 12,
+    fontWeight: 700,
   },
-  grid: {
+  title: {
+    margin: '6px 0 8px',
+    fontSize: 38,
+    color: '#2c241b',
+  },
+  subTitle: {
+    margin: 0,
+    color: '#6b6053',
+    lineHeight: 1.6,
+  },
+  headerActions: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  },
+  summaryGrid: {
     display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
     gap: 12,
+    marginBottom: 18,
+  },
+  summaryCard: {
+    display: 'grid',
+    gap: 4,
+    padding: '16px 18px',
+    borderRadius: 18,
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+  },
+  layout: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gap: 18,
+    alignItems: 'start',
+    marginBottom: 18,
+  },
+  editorCard: {
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 20,
+    padding: 20,
+    boxShadow: '0 14px 30px rgba(77, 60, 35, 0.05)',
+  },
+  sidebarCard: {
+    background: '#fffdf8',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 20,
+    padding: 20,
+  },
+  lyricsCard: {
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    borderRadius: 20,
+    padding: 20,
+    boxShadow: '0 14px 30px rgba(77, 60, 35, 0.05)',
+  },
+  sectionHeader: {
+    marginBottom: 14,
+  },
+  sectionTitle: {
+    margin: 0,
+    color: '#2f261c',
+  },
+  sectionHint: {
+    margin: '6px 0 0',
+    color: '#7c6d5d',
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+  formGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: 14,
   },
   label: {
+    display: 'grid',
+    gap: 6,
+  },
+  labelWide: {
+    display: 'grid',
+    gap: 6,
+    gridColumn: '1 / -1',
+  },
+  labelText: {
+    color: '#6a5d4f',
     fontSize: 13,
-    fontWeight: 600,
-    color: '#333',
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
   },
   input: {
-    display: 'block',
     width: '100%',
-    padding: '7px 10px',
-    border: '1px solid #ccc',
-    borderRadius: 4,
-    marginTop: 3,
+    padding: '11px 14px',
+    borderRadius: 14,
+    border: '1px solid rgba(114, 98, 78, 0.2)',
+    background: '#fff',
+    color: '#2f261c',
     fontFamily: 'inherit',
+  },
+  lyricsLabel: {
+    display: 'block',
   },
   textarea: {
     display: 'block',
     width: '100%',
-    height: 300,
-    padding: '10px',
-    border: '1px solid #ccc',
-    borderRadius: 4,
-    marginTop: 3,
+    minHeight: 420,
+    padding: '16px 18px',
+    border: '1px solid rgba(114, 98, 78, 0.2)',
+    borderRadius: 16,
+    background: '#fff',
     fontFamily: 'inherit',
-    fontSize: 15,
+    fontSize: 17,
     resize: 'vertical',
-    lineHeight: 1.8,
+    lineHeight: 1.9,
   },
-  btnRow: {
-    display: 'flex',
-    gap: 8,
-    marginTop: 16,
-    flexWrap: 'wrap',
+  actionStack: {
+    display: 'grid',
+    gap: 10,
   },
-  primary: {
-    padding: '8px 20px',
-    background: '#3498db',
-    color: '#fff',
+  primaryBtn: {
+    padding: '11px 16px',
+    borderRadius: 999,
     border: 'none',
-    borderRadius: 4,
+    background: '#2f6b5f',
+    color: '#fff',
+    fontWeight: 700,
     cursor: 'pointer',
+  },
+  secondaryBtn: {
+    padding: '11px 16px',
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.22)',
+    background: '#fff',
+    color: '#3b332a',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  linkButton: {
+    padding: '11px 16px',
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.22)',
+    background: '#fff',
+    color: '#3b332a',
+    fontWeight: 700,
+    textDecoration: 'none',
+    textAlign: 'center',
+  },
+  info: {
+    color: '#6b6053',
+  },
+  success: {
+    color: '#1e8449',
     fontWeight: 600,
-  },
-  secondary: {
-    padding: '8px 14px',
-    background: '#f0f0f0',
-    color: '#333',
-    border: '1px solid #ccc',
-    borderRadius: 4,
-    cursor: 'pointer',
-  },
-  loading: {
-    color: '#888',
+    marginBottom: 14,
   },
   error: {
     color: '#c0392b',
     fontWeight: 600,
-    marginTop: 8,
+    marginBottom: 14,
   },
 };

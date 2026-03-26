@@ -2,7 +2,7 @@ import axios from 'axios';
 import { BaseLyricsProvider } from './base.js';
 import { normalize, similarity } from '../../utils/normalize.js';
 
-const SEARCH_URL = 'https://www.zemereshet.co.il/m/search.asp';
+const SONG_SEARCH_URL = 'https://www.zemereshet.co.il/m/songs.asp';
 const BASE_URL = 'https://www.zemereshet.co.il';
 
 const ARTIST_ALIASES = {
@@ -16,14 +16,13 @@ const ARTIST_ALIASES = {
   'shotei hanevuah': 'שוטי הנבואה',
   'maor cohen': 'מאור כהן',
   'hemi rudner': 'חמי רודנר',
-  'fortisakharof': 'פורטיסחרוף',
+  fortisakharof: 'פורטיסחרוף',
   'rami fortis': 'רמי פורטיס',
   'yehuda poliker': 'יהודה פוליקר',
   'arik einstein': 'אריק איינשטיין',
   'shalom hanoch': 'שלום חנוך',
   'aviv geffen': 'אביב גפן',
-  girafot: 'ג׳ירפות',
-  girafot: 'ג׳ירפות',
+  girafot: "ג'ירפות",
   'the witches': 'המכשפות',
   avtipus: 'אבטיפוס',
   kavaret: 'כוורת',
@@ -55,9 +54,12 @@ function stripHtml(html) {
 
 function buildAbsoluteUrl(href) {
   if (!href) return '';
-  if (/^https?:\/\//i.test(href)) return href;
-  if (href.startsWith('/')) return `${BASE_URL}${href}`;
-  return `${BASE_URL}/m/${href.replace(/^\.?\//, '')}`;
+  const decodedHref = String(href).replace(/&amp;/gi, '&').trim();
+
+  if (/^https?:\/\//i.test(decodedHref)) return decodedHref;
+  if (decodedHref.startsWith('/')) return `${BASE_URL}${decodedHref}`;
+
+  return `${BASE_URL}/m/${decodedHref.replace(/^\.?\//, '')}`;
 }
 
 function extractCandidates(html) {
@@ -152,8 +154,7 @@ function scoreCandidate(label, title, artist) {
     return Math.min(0.95, score);
   }
 
-  // אם הכותרת בעברית והאמן באנגלית/לא מופיע בתוצאה,
-  // לא נוריד חזק בגלל האמן. הכותרת קודמת.
+  // Favor strong title matches even when the result label omits the artist.
   if (isHebrew(title) && !isHebrew(artist)) {
     if (titleCoverage >= 1) {
       score = Math.max(score, 0.78);
@@ -177,6 +178,8 @@ function scoreCandidate(label, title, artist) {
 
 function extractLyricsFromSongPage(html) {
   const candidates = [
+    /<div[^>]+id="?milim_content\d+"?[^>]*>([\s\S]*?)<\/td>/i,
+    /<div[^>]+id="lyrics_div"[^>]*>[\s\S]*?<div[^>]+class="[^"]*lyrics_punctuated[^"]*"[^>]*>([\s\S]*?)<\/td>/i,
     /<div[^>]+id="songwords"[^>]*>([\s\S]*?)<\/div>/i,
     /<div[^>]+class="[^"]*songwords[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
     /<div[^>]+class="[^"]*lyrics[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
@@ -199,13 +202,17 @@ function extractLyricsFromSongPage(html) {
 async function runSearch(query) {
   if (!query) return [];
 
-  const response = await axios.get(SEARCH_URL, {
-    params: { q: query },
-    timeout: 10000,
-    headers: {
-      'User-Agent': 'Mozilla/5.0',
-    },
-  });
+  const response = await axios.post(
+    SONG_SEARCH_URL,
+    new URLSearchParams({ phrase: query }),
+    {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    }
+  );
 
   const html = String(response.data || '');
   if (!html) return [];
@@ -273,8 +280,6 @@ export class ZemereshetProvider extends BaseLyricsProvider {
         return null;
       }
 
-      // לא זורקים אוטומטית על סף 0.4.
-      // מנסים כמה מועמדים ראשונים, במיוחד כשיש התאמת כותרת חזקה.
       const candidatesToTry = deduped.slice(0, 5);
 
       for (const candidate of candidatesToTry) {
@@ -304,8 +309,9 @@ export class ZemereshetProvider extends BaseLyricsProvider {
 
       return null;
     } catch (err) {
-      console.error('[zemereshet] fetch failed:', err?.message || err);
-      return null;
+      const message = err?.message || 'Zemereshet provider failed';
+      console.error('[zemereshet] fetch failed:', message);
+      throw new Error(message);
     }
   }
 }

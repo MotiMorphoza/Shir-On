@@ -181,8 +181,9 @@ export class ShironetProvider extends BaseLyricsProvider {
         confidence_score: Math.min(0.95, candidates[0].score),
       };
     } catch (err) {
-      console.error('[shironet] fetch failed:', err?.message || err);
-      return null;
+      const message = err?.message || 'Shironet provider failed';
+      console.error('[shironet] fetch failed:', message);
+      throw new Error(message);
     }
   }
 }

@@ -2,13 +2,24 @@ import { Router } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
 import { importSpotifyTracks } from '../services/importService.js';
-import { saveReport } from '../services/reportService.js';
+import { createImportBatchReport } from '../services/reportService.js';
+import {
+  createBackgroundJob,
+  findActiveJobByMeta,
+} from '../services/jobService.js';
+import {
+  replacePlaylistSongs,
+  upsertSpotifyPlaylist,
+} from '../services/playlistsService.js';
 
 const router = Router();
 
 const SPOTIFY_ACCOUNTS_BASE = 'https://accounts.spotify.com';
 const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
-const DEFAULT_FRONTEND_URL = 'http://127.0.0.1:5174';
+const DEFAULT_FRONTEND_URL = 'http://127.0.0.1:5173';
+const SPOTIFY_TIMEOUT_MS = 15000;
+const ALLOWED_FRONTEND_HOSTS = new Set(['127.0.0.1', 'localhost']);
+const ALLOWED_FRONTEND_PORTS = new Set(['5173', '5174']);
 
 function getSpotifyConfig() {
   const clientId = process.env.SPOTIFY_CLIENT_ID?.trim() || '';
@@ -21,6 +32,56 @@ function getSpotifyConfig() {
   }
 
   return { clientId, clientSecret, redirectUri, frontendUrl };
+}
+
+function getSpotifyStatusPayload() {
+  const clientId = process.env.SPOTIFY_CLIENT_ID?.trim() || '';
+  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET?.trim() || '';
+  const redirectUri = process.env.SPOTIFY_REDIRECT_URI?.trim() || '';
+  const frontendUrl = process.env.FRONTEND_URL?.trim() || DEFAULT_FRONTEND_URL;
+
+  const missing = [];
+
+  if (!clientId) missing.push('SPOTIFY_CLIENT_ID');
+  if (!clientSecret) missing.push('SPOTIFY_CLIENT_SECRET');
+  if (!redirectUri) missing.push('SPOTIFY_REDIRECT_URI');
+
+  return {
+    configured: missing.length === 0,
+    missing,
+    redirect_uri: redirectUri || null,
+    frontend_url: frontendUrl,
+  };
+}
+
+function getSafeFrontendOrigin(req) {
+  const candidates = [req.get('origin'), req.get('referer')];
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'string') {
+      continue;
+    }
+
+    try {
+      const url = new URL(candidate);
+      const port =
+        url.port || (url.protocol === 'https:' ? '443' : url.protocol === 'http:' ? '80' : '');
+
+      if (!ALLOWED_FRONTEND_HOSTS.has(url.hostname)) {
+        continue;
+      }
+
+      if (!ALLOWED_FRONTEND_PORTS.has(port)) {
+        continue;
+      }
+
+      return url.origin;
+    } catch {
+      continue;
+    }
+  }
+
+  return '';
 }
 
 function extractSpotifyId(input, expectedType = null) {
@@ -73,6 +134,20 @@ function getSpotifyErrorMessage(err, fallbackMessage) {
   );
 }
 
+function buildFrontendReturnUrl(frontendUrl, returnTo, params = {}) {
+  const url = new URL(returnTo || '/import', frontendUrl);
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') {
+      continue;
+    }
+
+    url.searchParams.set(key, String(value));
+  }
+
+  return url.toString();
+}
+
 async function refreshSpotifyAccessToken(refreshToken) {
   const { clientId, clientSecret } = getSpotifyConfig();
 
@@ -83,6 +158,7 @@ async function refreshSpotifyAccessToken(refreshToken) {
       refresh_token: refreshToken,
     }).toString(),
     {
+      timeout: SPOTIFY_TIMEOUT_MS,
       headers: {
         Authorization: getAuthHeader(clientId, clientSecret),
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -135,6 +211,7 @@ async function ensureValidSpotifySession(req) {
 
 async function spotifyGet(url, accessToken, params = {}) {
   const response = await axios.get(url, {
+    timeout: SPOTIFY_TIMEOUT_MS,
     params,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -314,6 +391,24 @@ async function fetchAllPlaylistTracks(playlistId, accessToken) {
     .filter(Boolean);
 }
 
+async function fetchPlaylistDetails(playlistId, accessToken) {
+  const playlist = await spotifyGet(
+    `${SPOTIFY_API_BASE}/playlists/${playlistId}`,
+    accessToken,
+    {
+      fields: 'id,name,description,external_urls,images',
+    }
+  );
+
+  return {
+    spotifyId: firstString(playlist?.id),
+    name: firstString(playlist?.name, 'Spotify Playlist'),
+    description: firstString(playlist?.description) || null,
+    sourceUrl: firstString(playlist?.external_urls?.spotify) || null,
+    imageUrl: firstString(playlist?.images?.[0]?.url) || null,
+  };
+}
+
 async function fetchAllAlbumTracks(albumId, accessToken) {
   const album = await spotifyGet(`${SPOTIFY_API_BASE}/albums/${albumId}`, accessToken);
 
@@ -354,32 +449,111 @@ async function fetchAllAlbumTracks(albumId, accessToken) {
 }
 
 function persistImportReport(subtype, sourceId, tracks, report) {
-  return saveReport({
-    type: 'import',
+  return createImportBatchReport({
     subtype,
-    source_type: subtype,
-    source_id: sourceId,
+    sourceId,
+    rows: report.rows,
+    found: tracks.length,
     summary: {
       found: Number(tracks.length || 0),
       imported: Number(report.imported || 0),
+      linked_existing: Number(report.linked_existing || 0),
+      passed: Number((report.imported || 0) + (report.linked_existing || 0)),
+      blocked: Number(report.blocked || 0),
       skipped: Number(report.skipped || 0),
       invalid: Number(report.invalid || 0),
       errors: Number(report.errors || 0),
       ...(report.summary || {}),
     },
-    preview_titles: tracks.slice(0, 10).map((t) => `${t.artist} — ${t.title}`),
-    rows: Array.isArray(report.rows) ? report.rows : [],
-    errors_list: Array.isArray(report.errors_list) ? report.errors_list : [],
-    report,
+    meta: {
+      preview_titles: tracks.slice(0, 10).map((t) => `${t.artist} - ${t.title}`),
+    },
+    errorsList: report.errors_list,
   });
 }
 
+function buildSpotifyImportResponse({
+  subtype,
+  sourceId,
+  tracks,
+  report,
+  saved,
+  playlist = null,
+}) {
+  return {
+    source_type: subtype,
+    source_id: sourceId,
+    playlist,
+    tracks_found: tracks.length,
+    preview_titles: tracks.slice(0, 10).map((t) => `${t.artist} - ${t.title}`),
+    imported: report.imported,
+    linked_existing: report.linked_existing,
+    passed: report.imported + report.linked_existing,
+    blocked: report.blocked,
+    skipped: report.skipped,
+    invalid: report.invalid,
+    errors: report.errors,
+    summary: report.summary,
+    rows: report.rows,
+    errors_list: report.errors_list,
+    report,
+    report_id: saved.id,
+  };
+}
+
+router.get('/status', async (req, res) => {
+  const config = getSpotifyStatusPayload();
+
+  if (!config.configured) {
+    return res.json({
+      ...config,
+      authenticated: false,
+      account: null,
+    });
+  }
+
+  try {
+    const spotifySession = await ensureValidSpotifySession(req);
+    let account = null;
+
+    if (spotifySession?.access_token) {
+      try {
+        const me = await spotifyGet(`${SPOTIFY_API_BASE}/me`, spotifySession.access_token);
+        account = {
+          id: me.id,
+          display_name: me.display_name || '',
+          email: me.email || null,
+          product: me.product || null,
+        };
+      } catch (err) {
+        console.error('Spotify status /me failed:', err?.response?.data || err);
+      }
+    }
+
+    return res.json({
+      ...config,
+      authenticated: Boolean(spotifySession?.access_token),
+      account,
+    });
+  } catch (err) {
+    console.error('Spotify status failed:', err?.response?.data || err);
+    return res.status(500).json({
+      error: getSpotifyErrorMessage(err, 'Failed to load Spotify status'),
+    });
+  }
+});
+
 router.get('/login', async (req, res, next) => {
   try {
-    const { clientId, redirectUri } = getSpotifyConfig();
+    const { clientId, redirectUri, frontendUrl } = getSpotifyConfig();
 
     const state = crypto.randomBytes(16).toString('hex');
     req.session.spotify_state = state;
+    req.session.spotify_return_to =
+      typeof req.query.returnTo === 'string' && req.query.returnTo.startsWith('/')
+        ? req.query.returnTo
+        : '/import';
+    req.session.spotify_frontend_url = getSafeFrontendOrigin(req) || frontendUrl;
 
     const scope = [
       'playlist-read-private',
@@ -408,15 +582,43 @@ router.get('/callback', async (req, res, next) => {
     const code = typeof req.query.code === 'string' ? req.query.code : '';
     const state = typeof req.query.state === 'string' ? req.query.state : '';
 
+    const returnTo =
+      typeof req.session.spotify_return_to === 'string' &&
+      req.session.spotify_return_to.startsWith('/')
+        ? req.session.spotify_return_to
+        : '/import';
+    const returnFrontendUrl =
+      typeof req.session.spotify_frontend_url === 'string' &&
+      req.session.spotify_frontend_url.trim()
+        ? req.session.spotify_frontend_url.trim()
+        : frontendUrl;
+
     if (!code) {
-      return res.status(400).send('Missing code');
+      return res.redirect(
+        buildFrontendReturnUrl(returnFrontendUrl, returnTo, {
+          spotify: 'error',
+          spotify_error: 'missing_code',
+        })
+      );
     }
 
     if (!state || state !== req.session?.spotify_state) {
-      return res.status(400).send('Invalid auth state');
+      delete req.session.spotify_state;
+      delete req.session.spotify_return_to;
+      delete req.session.spotify_frontend_url;
+      await saveSession(req);
+
+      return res.redirect(
+        buildFrontendReturnUrl(returnFrontendUrl, returnTo, {
+          spotify: 'error',
+          spotify_error: 'invalid_state',
+        })
+      );
     }
 
     delete req.session.spotify_state;
+    delete req.session.spotify_return_to;
+    delete req.session.spotify_frontend_url;
 
     const tokenRes = await axios.post(
       `${SPOTIFY_ACCOUNTS_BASE}/api/token`,
@@ -426,6 +628,7 @@ router.get('/callback', async (req, res, next) => {
         redirect_uri: redirectUri,
       }).toString(),
       {
+        timeout: SPOTIFY_TIMEOUT_MS,
         headers: {
           Authorization: getAuthHeader(clientId, clientSecret),
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -438,11 +641,40 @@ router.get('/callback', async (req, res, next) => {
       refresh_token: tokenRes.data.refresh_token || null,
       expires_at: Date.now() + Number(tokenRes.data.expires_in || 3600) * 1000,
     };
-
     await saveSession(req);
-    res.redirect(frontendUrl);
+    res.redirect(
+      buildFrontendReturnUrl(returnFrontendUrl, returnTo, {
+        spotify: 'connected',
+      })
+    );
   } catch (err) {
-    next(err);
+    try {
+      const { frontendUrl } = getSpotifyConfig();
+      const returnTo =
+        typeof req.session?.spotify_return_to === 'string' &&
+        req.session.spotify_return_to.startsWith('/')
+          ? req.session.spotify_return_to
+          : '/import';
+      const returnFrontendUrl =
+        typeof req.session?.spotify_frontend_url === 'string' &&
+        req.session.spotify_frontend_url.trim()
+          ? req.session.spotify_frontend_url.trim()
+          : frontendUrl;
+
+      delete req.session.spotify_state;
+      delete req.session.spotify_return_to;
+      delete req.session.spotify_frontend_url;
+      await saveSession(req);
+
+      return res.redirect(
+        buildFrontendReturnUrl(returnFrontendUrl, returnTo, {
+          spotify: 'error',
+          spotify_error: getSpotifyErrorMessage(err, 'spotify_auth_failed'),
+        })
+      );
+    } catch {
+      next(err);
+    }
   }
 });
 
@@ -512,6 +744,11 @@ router.post('/import/playlist', async (req, res) => {
       return res.status(401).json({ error: 'Not authenticated with Spotify' });
     }
 
+    const playlistMeta = await fetchPlaylistDetails(
+      playlistId,
+      spotifySession.access_token
+    );
+
     const tracks = await fetchAllPlaylistTracks(
       playlistId,
       spotifySession.access_token
@@ -519,13 +756,23 @@ router.post('/import/playlist', async (req, res) => {
 
     const report = await importSpotifyTracks(tracks);
     const saved = persistImportReport('spotify_playlist', playlistId, tracks, report);
+    const linkedSongIds = (Array.isArray(report.rows) ? report.rows : [])
+      .map((row) => row.song_id || row.matched_song_id || null)
+      .filter(Boolean);
+
+    const playlist = upsertSpotifyPlaylist(playlistMeta);
+    replacePlaylistSongs(playlist.id, linkedSongIds);
 
     return res.json({
       source_type: 'spotify_playlist',
       source_id: playlistId,
+      playlist,
       tracks_found: tracks.length,
       preview_titles: tracks.slice(0, 10).map((t) => `${t.artist} — ${t.title}`),
       imported: report.imported,
+      linked_existing: report.linked_existing,
+      passed: report.imported + report.linked_existing,
+      blocked: report.blocked,
       skipped: report.skipped,
       invalid: report.invalid,
       errors: report.errors,
@@ -571,6 +818,9 @@ router.post('/import/album', async (req, res) => {
       tracks_found: tracks.length,
       preview_titles: tracks.slice(0, 10).map((t) => `${t.artist} — ${t.title}`),
       imported: report.imported,
+      linked_existing: report.linked_existing,
+      passed: report.imported + report.linked_existing,
+      blocked: report.blocked,
       skipped: report.skipped,
       invalid: report.invalid,
       errors: report.errors,
@@ -584,6 +834,180 @@ router.post('/import/album', async (req, res) => {
     console.error('Spotify album import failed:', err?.response?.data || err);
     return res.status(err?.response?.status || 500).json({
       error: getSpotifyErrorMessage(err, 'Spotify album import failed'),
+    });
+  }
+});
+
+router.post('/import/playlist/background', async (req, res) => {
+  try {
+    const playlistId = extractSpotifyId(req.body?.playlistId, 'playlist');
+
+    if (!playlistId) {
+      return res.status(400).json({ error: 'Invalid playlist ID or URL' });
+    }
+
+    const spotifySession = await ensureValidSpotifySession(req);
+
+    if (!spotifySession?.access_token) {
+      return res.status(401).json({ error: 'Not authenticated with Spotify' });
+    }
+
+    const accessToken = spotifySession.access_token;
+
+    const existingJob = findActiveJobByMeta(
+      'spotify_playlist_import',
+      {
+        spotify_id: playlistId,
+      },
+      ['spotify_id']
+    );
+
+    if (existingJob) {
+      return res.status(200).json({
+        ...existingJob,
+        reused: true,
+      });
+    }
+
+    const job = createBackgroundJob({
+      type: 'spotify_playlist_import',
+      label: 'Spotify playlist import',
+      meta: {
+        spotify_id: playlistId,
+      },
+      run: async (controls) => {
+        controls.setPhase('fetching_playlist', 'Fetching Spotify playlist');
+
+        const playlistMeta = await fetchPlaylistDetails(playlistId, accessToken);
+        const tracks = await fetchAllPlaylistTracks(playlistId, accessToken);
+
+        controls.setTotal(tracks.length);
+        controls.setPhase('importing_tracks', `Importing ${tracks.length} tracks`);
+
+        const report = importSpotifyTracks(tracks, {
+          onRow(row, liveReport) {
+            controls.setCurrent(`${row.artist || ''} - ${row.title || ''}`.trim());
+            controls.addEntry(row);
+            controls.updateProgress({
+              total: tracks.length,
+              completed: liveReport.rows.length,
+              succeeded: liveReport.imported + liveReport.linked_existing,
+              failed: liveReport.errors + liveReport.invalid,
+              skipped: 0,
+            });
+          },
+        });
+        const saved = persistImportReport('spotify_playlist', playlistId, tracks, report);
+        const linkedSongIds = (Array.isArray(report.rows) ? report.rows : [])
+          .map((row) => row.song_id || row.matched_song_id || null)
+          .filter(Boolean);
+
+        const playlist = upsertSpotifyPlaylist(playlistMeta);
+        replacePlaylistSongs(playlist.id, linkedSongIds);
+
+        controls.complete({
+          summary: saved.summary || report.summary || {},
+          report_id: saved.id,
+          entries: report.rows,
+          result: buildSpotifyImportResponse({
+            subtype: 'spotify_playlist',
+            sourceId: playlistId,
+            tracks,
+            report,
+            saved,
+            playlist,
+          }),
+        });
+      },
+    });
+
+    return res.status(202).json(job);
+  } catch (err) {
+    return res.status(err?.response?.status || 500).json({
+      error: getSpotifyErrorMessage(err, 'Spotify background playlist import failed'),
+    });
+  }
+});
+
+router.post('/import/album/background', async (req, res) => {
+  try {
+    const albumId = extractSpotifyId(req.body?.albumId, 'album');
+
+    if (!albumId) {
+      return res.status(400).json({ error: 'Invalid album ID or URL' });
+    }
+
+    const spotifySession = await ensureValidSpotifySession(req);
+
+    if (!spotifySession?.access_token) {
+      return res.status(401).json({ error: 'Not authenticated with Spotify' });
+    }
+
+    const accessToken = spotifySession.access_token;
+
+    const existingJob = findActiveJobByMeta(
+      'spotify_album_import',
+      {
+        spotify_id: albumId,
+      },
+      ['spotify_id']
+    );
+
+    if (existingJob) {
+      return res.status(200).json({
+        ...existingJob,
+        reused: true,
+      });
+    }
+
+    const job = createBackgroundJob({
+      type: 'spotify_album_import',
+      label: 'Spotify album import',
+      meta: {
+        spotify_id: albumId,
+      },
+      run: async (controls) => {
+        controls.setPhase('fetching_album', 'Fetching Spotify album');
+
+        const tracks = await fetchAllAlbumTracks(albumId, accessToken);
+
+        controls.setTotal(tracks.length);
+        controls.setPhase('importing_tracks', `Importing ${tracks.length} tracks`);
+
+        const report = importSpotifyTracks(tracks, {
+          onRow(row, liveReport) {
+            controls.setCurrent(`${row.artist || ''} - ${row.title || ''}`.trim());
+            controls.addEntry(row);
+            controls.updateProgress({
+              total: tracks.length,
+              completed: liveReport.rows.length,
+              succeeded: liveReport.imported + liveReport.linked_existing,
+              failed: liveReport.errors + liveReport.invalid,
+              skipped: 0,
+            });
+          },
+        });
+        const saved = persistImportReport('spotify_album', albumId, tracks, report);
+
+        controls.complete({
+          summary: saved.summary || report.summary || {},
+          report_id: saved.id,
+          entries: report.rows,
+          result: buildSpotifyImportResponse({
+            subtype: 'spotify_album',
+            sourceId: albumId,
+            tracks,
+            report,
+            saved,
+          }),
+        });
+      },
+    });
+
+    return res.status(202).json(job);
+  } catch (err) {
+    return res.status(err?.response?.status || 500).json({
+      error: getSpotifyErrorMessage(err, 'Spotify background album import failed'),
     });
   }
 });

@@ -2,9 +2,6 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/index.js';
 import { normalize } from '../utils/normalize.js';
 import { sanitizeText } from '../utils/sanitize.js';
-import { fetchLyricsWithReport } from '../providers/lyrics/index.js';
-
-const CONFIDENCE_REVIEW_THRESHOLD = 0.6;
 
 function cleanString(value, fallback = '') {
   if (typeof value !== 'string') {
@@ -42,38 +39,6 @@ function cleanTrackNumber(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function cleanBooleanInt(value) {
-  return value ? 1 : 0;
-}
-
-function cleanWhitespace(value = '') {
-  return String(value || '').replace(/\s+/g, ' ').trim();
-}
-
-function cleanTitleForLyrics(title = '') {
-  let value = cleanWhitespace(title);
-
-  value = value
-    .replace(
-      /\s*-\s*(remastered|remaster|live|edit|version|mono|stereo|acoustic|radio edit|deluxe version)\b.*$/i,
-      ''
-    )
-    .replace(
-      /\s*\((remastered|remaster|live|edit|version|mono|stereo|acoustic|radio edit|deluxe version)[^)]*\)\s*$/i,
-      ''
-    )
-    .replace(
-      /\s*\[(remastered|remaster|live|edit|version|mono|stereo|acoustic|radio edit|deluxe version)[^\]]*\]\s*$/i,
-      ''
-    )
-    .replace(/\s*-\s*from\b.*$/i, '')
-    .replace(/\s*-\s*feat\b.*$/i, '')
-    .replace(/\s*\((feat|ft|featuring)\.?\s+[^)]*\)\s*$/i, '')
-    .replace(/\s*\[(feat|ft|featuring)\.?\s+[^\]]*\]\s*$/i, '');
-
-  return cleanWhitespace(value);
-}
-
 function cleanArtistForLyrics(artist = '') {
   let value = cleanWhitespace(artist);
 
@@ -89,69 +54,6 @@ function cleanArtistForLyrics(artist = '') {
     .replace(/\s*-\s*(official|live|acoustic|remastered)\b.*$/i, '');
 
   return cleanWhitespace(value);
-}
-
-function buildLyricsQueryVariants(title, artist) {
-  const originalTitle = cleanWhitespace(title);
-  const originalArtist = cleanWhitespace(artist);
-  const cleanTitle = cleanTitleForLyrics(originalTitle);
-  const cleanArtist = cleanArtistForLyrics(originalArtist);
-
-  const variants = [
-    { title: cleanTitle, artist: cleanArtist, label: 'clean_title_clean_artist' },
-    { title: cleanTitle, artist: '', label: 'clean_title_only' },
-    { title: originalTitle, artist: cleanArtist, label: 'original_title_clean_artist' },
-    { title: originalTitle, artist: '', label: 'original_title_only' },
-    { title: cleanTitle, artist: originalArtist, label: 'clean_title_original_artist' },
-    { title: originalTitle, artist: originalArtist, label: 'original_title_original_artist' },
-  ];
-
-  const seen = new Set();
-
-  return variants.filter((variant) => {
-    const t = cleanWhitespace(variant.title);
-    const a = cleanWhitespace(variant.artist);
-    if (!t) return false;
-
-    const key = `${t}|||${a}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-
-    variant.title = t;
-    variant.artist = a;
-    return true;
-  });
-}
-
-async function fetchLyricsWithFallbacks(song) {
-  const queryVariants = buildLyricsQueryVariants(song.title, song.artist_name);
-
-  let bestResult = null;
-
-  for (const variant of queryVariants) {
-    const { result } = await fetchLyricsWithReport(variant.title, variant.artist);
-
-    if (result?.lyrics_text) {
-      return {
-        result,
-        winnerVariant: variant,
-        queryVariants,
-      };
-    }
-
-    if (
-      result?.confidence_score &&
-      (!bestResult || result.confidence_score > bestResult.confidence_score)
-    ) {
-      bestResult = result;
-    }
-  }
-
-  return {
-    result: bestResult,
-    winnerVariant: null,
-    queryVariants,
-  };
 }
 
 function upsertArtist(name) {
@@ -279,25 +181,52 @@ function upsertAlbum({ title, artistId, year, coverUrl, spotifyId }) {
 }
 
 export function getSongs({
+  ids,
   search,
   artist,
   album,
   year,
   status,
   tags,
-  printReady,
+  playlistId,
   sort = 'title',
   page = 1,
   limit = 50,
 } = {}) {
+  const effectiveLyricsStatusSql = `
+    CASE
+      WHEN lx.text IS NOT NULL AND TRIM(lx.text) <> ''
+        AND (s.lyrics_status IS NULL OR s.lyrics_status = 'missing')
+      THEN CASE
+        WHEN lx.is_verified = 1 THEN 'reviewed'
+        WHEN lx.source = 'manual' THEN 'manual'
+        ELSE 'auto'
+      END
+      ELSE COALESCE(s.lyrics_status, 'missing')
+    END
+  `;
+
   let sql = `
-    SELECT s.*, ar.name AS artist_name, al.title AS album_title
+    SELECT s.*,
+           ar.name AS artist_name,
+           al.title AS album_title,
+           lx.text AS lyrics_text,
+           lx.source AS lyrics_source,
+           lx.confidence_score AS lyrics_confidence_score,
+           lx.is_verified AS lyrics_is_verified,
+           ${effectiveLyricsStatusSql} AS effective_lyrics_status
     FROM songs s
     LEFT JOIN artists ar ON s.artist_id = ar.id
     LEFT JOIN albums al ON s.album_id = al.id
+    LEFT JOIN lyrics lx ON lx.song_id = s.id
     WHERE 1=1
   `;
   const params = [];
+
+  if (Array.isArray(ids) && ids.length > 0) {
+    sql += ` AND s.id IN (${ids.map(() => '?').join(',')})`;
+    params.push(...ids);
+  }
 
   if (search) {
     sql += ' AND (s.normalized_title LIKE ? OR ar.normalized LIKE ?)';
@@ -321,13 +250,24 @@ export function getSongs({
   }
 
   if (status) {
-    sql += ' AND s.lyrics_status = ?';
-    params.push(status);
+    if (status === 'has_lyrics') {
+      sql += ` AND ${effectiveLyricsStatusSql} <> ?`;
+      params.push('missing');
+    } else {
+      sql += ` AND ${effectiveLyricsStatusSql} = ?`;
+      params.push(status);
+    }
   }
 
-  if (printReady !== undefined) {
-    sql += ' AND s.is_print_ready = ?';
-    params.push(printReady ? 1 : 0);
+  if (playlistId) {
+    sql += `
+      AND s.id IN (
+        SELECT song_id
+        FROM playlist_songs
+        WHERE playlist_id = ?
+      )
+    `;
+    params.push(playlistId);
   }
 
   if (Array.isArray(tags) && tags.length > 0) {
@@ -351,13 +291,27 @@ export function getSongs({
   };
 
   const safePage = Math.max(1, Number(page) || 1);
-  const safeLimit = Math.max(1, Math.min(500, Number(limit) || 50));
+  const safeLimit = Math.max(1, Math.min(2000, Number(limit) || 50));
 
   sql += ` ORDER BY ${allowedSort[sort] || 's.normalized_title'}`;
   sql += ' LIMIT ? OFFSET ?';
   params.push(safeLimit, (safePage - 1) * safeLimit);
 
-  return db.prepare(sql).all(...params);
+  return db
+    .prepare(sql)
+    .all(...params)
+    .map((row) => ({
+      ...row,
+      lyrics_status: row.effective_lyrics_status || row.lyrics_status || 'missing',
+      lyrics: row.lyrics_text
+        ? {
+            text: row.lyrics_text,
+            source: row.lyrics_source || null,
+            confidence_score: row.lyrics_confidence_score ?? null,
+            is_verified: row.lyrics_is_verified ? 1 : 0,
+          }
+        : null,
+    }));
 }
 
 export function getSongById(id) {
@@ -378,7 +332,7 @@ export function getSongById(id) {
   song.lyrics =
     db
       .prepare(
-        'SELECT * FROM lyrics WHERE song_id = ? ORDER BY updated_at DESC LIMIT 1'
+        'SELECT * FROM lyrics WHERE song_id = ? LIMIT 1'
       )
       .get(id) || null;
 
@@ -470,11 +424,6 @@ export function updateSong(id, data) {
   if (data.version_type !== undefined) {
     fields.push('version_type = ?');
     values.push(cleanNullableString(data.version_type));
-  }
-
-  if (data.is_print_ready !== undefined) {
-    fields.push('is_print_ready = ?');
-    values.push(cleanBooleanInt(data.is_print_ready));
   }
 
   if (data.lyrics_status !== undefined) {
@@ -581,46 +530,6 @@ export function saveLyrics(
   ).run(status, songId);
 
   return getSongById(songId);
-}
-
-export async function autoFetchLyrics(songId) {
-  const song = getSongById(songId);
-  if (!song) {
-    throw new Error('Song not found');
-  }
-
-  const { result, winnerVariant, queryVariants } = await fetchLyricsWithFallbacks(song);
-
-  if (!result?.lyrics_text) {
-    return {
-      fetched: false,
-      song,
-      provider: result?.source || null,
-      confidence_score: result?.confidence_score || null,
-      query_variant: winnerVariant?.label || null,
-      query_title: winnerVariant?.title || null,
-      query_artist: winnerVariant?.artist || null,
-      query_variants: queryVariants || [],
-    };
-  }
-
-  const updated = saveLyrics(songId, {
-    text: result.lyrics_text,
-    source: result.source || 'auto',
-    confidenceScore: result.confidence_score || 0,
-    isVerified: 0,
-  });
-
-  return {
-    fetched: true,
-    song: updated,
-    provider: result?.source || null,
-    confidence_score: result?.confidence_score || null,
-    query_variant: winnerVariant?.label || null,
-    query_title: winnerVariant?.title || null,
-    query_artist: winnerVariant?.artist || null,
-    query_variants: queryVariants || [],
-  };
 }
 
 export function setTags(songId, tagNames) {
@@ -731,6 +640,18 @@ export function mergeSongs(keepId, mergeIds, { useMetadataFrom, useLyricsFrom })
 
     for (const id of mergeIds) {
       if (id !== keepId) {
+        db.prepare(
+          'UPDATE OR IGNORE playlist_songs SET song_id = ? WHERE song_id = ?'
+        ).run(keepId, id);
+        db.prepare(
+          'UPDATE OR IGNORE collection_songs SET song_id = ? WHERE song_id = ?'
+        ).run(keepId, id);
+        db.prepare(
+          'UPDATE OR IGNORE print_set_songs SET song_id = ? WHERE song_id = ?'
+        ).run(keepId, id);
+        db.prepare(
+          'UPDATE OR IGNORE song_tags SET song_id = ? WHERE song_id = ?'
+        ).run(keepId, id);
         deleteSong(id);
       }
     }

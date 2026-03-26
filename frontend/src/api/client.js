@@ -40,6 +40,15 @@ export const api = {
 
   getSong: (id) => request(`/songs/${id}`),
 
+  getSongsByIds: (ids) =>
+    request(
+      '/songs?' +
+        new URLSearchParams({
+          ids: (Array.isArray(ids) ? ids : []).filter(Boolean).join(','),
+          limit: String((Array.isArray(ids) ? ids.length : 0) || 1),
+        }).toString()
+    ),
+
   createSong: (data) =>
     request('/songs', {
       method: 'POST',
@@ -68,6 +77,13 @@ export const api = {
       method: 'POST',
     }),
 
+  startLyricsRunJob: (ids) =>
+    request('/songs/fetch-lyrics-run/background', {
+      method: 'POST',
+      keepalive: true,
+      body: JSON.stringify({ ids }),
+    }),
+
   setTags: (id, tags) =>
     request(`/songs/${id}/tags`, {
       method: 'PUT',
@@ -88,19 +104,20 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  importPlaylist: (playlistId) =>
-    request('/spotify/import/playlist', {
+  startPlaylistImportJob: (playlistId) =>
+    request('/spotify/import/playlist/background', {
       method: 'POST',
+      keepalive: true,
       body: JSON.stringify({ playlistId }),
     }),
 
-  importAlbum: (albumId) =>
-    request('/spotify/import/album', {
+  startAlbumImportJob: (albumId) =>
+    request('/spotify/import/album/background', {
       method: 'POST',
+      keepalive: true,
       body: JSON.stringify({ albumId }),
     }),
-
-  getSpotifySession: () => request('/spotify/session'),
+  getSpotifyStatus: () => request('/spotify/status'),
 
   getSpotifyMe: () => request('/spotify/me'),
 
@@ -119,6 +136,11 @@ export const api = {
       body: JSON.stringify({ name, description }),
     }),
 
+  deleteCollection: (id) =>
+    request(`/collections/${id}`, {
+      method: 'DELETE',
+    }),
+
   addToCollection: (collectionId, songId) =>
     request(`/collections/${collectionId}/songs`, {
       method: 'POST',
@@ -129,6 +151,10 @@ export const api = {
     request(`/collections/${collectionId}/songs/${songId}`, {
       method: 'DELETE',
     }),
+
+  getPlaylists: () => request('/playlists'),
+
+  getPlaylist: (id) => request(`/playlists/${id}`),
 
   importCsv: (file) => {
     const form = new FormData();
@@ -160,7 +186,24 @@ export const api = {
 
   getReport: (id) => request(`/reports/${id}`),
 
+  resetReports: (body = { includeLegacy: true }) =>
+    request('/reports/reset', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  getLyricsProviderStats: () => request('/reports/provider-stats/lyrics'),
+
+  getJobs: () => request('/jobs'),
+
+  getJob: (id) => request(`/jobs/${id}`),
+
   printPdf: async (body) => {
+    const previewWindow =
+      typeof window !== 'undefined'
+        ? window.open('', '_blank', 'noopener,noreferrer')
+        : null;
+
     const res = await fetch(`${BASE}/print/pdf`, {
       method: 'POST',
       credentials: 'include',
@@ -172,13 +215,24 @@ export const api = {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
+      if (previewWindow && !previewWindow.closed) {
+        previewWindow.close();
+      }
       throw new Error(err.error || 'PDF generation failed');
     }
 
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
 
-    window.open(url, '_blank', 'noopener,noreferrer');
+    if (previewWindow && !previewWindow.closed) {
+      previewWindow.location.href = url;
+    } else {
+      const link = document.createElement('a');
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.click();
+    }
 
     setTimeout(() => {
       URL.revokeObjectURL(url);

@@ -3,7 +3,14 @@ import db from '../db/index.js';
 import { sanitizeText } from '../utils/sanitize.js';
 
 export function getCollections() {
-  return db.prepare('SELECT * FROM collections ORDER BY name').all();
+  return db.prepare(
+    `SELECT c.*,
+            COUNT(cs.song_id) AS songs_count
+     FROM collections c
+     LEFT JOIN collection_songs cs ON c.id = cs.collection_id
+     GROUP BY c.id
+     ORDER BY c.name`
+  ).all();
 }
 
 export function getCollection(id) {
@@ -41,4 +48,8 @@ export function removeSongFromCollection(collectionId, songId) {
   db.prepare(
     'DELETE FROM collection_songs WHERE collection_id = ? AND song_id = ?'
   ).run(collectionId, songId);
+}
+
+export function deleteCollection(id) {
+  db.prepare('DELETE FROM collections WHERE id = ?').run(id);
 }

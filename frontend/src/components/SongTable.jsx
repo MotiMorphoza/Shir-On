@@ -1,20 +1,22 @@
 import React from 'react';
 
 const STATUS_LABELS = {
-  missing: 'Missing',
-  auto: 'Auto',
-  manual: 'Manual',
-  reviewed: 'Reviewed',
+  missing: 'No Lyrics',
+  has_lyrics: 'Has Lyrics',
 };
 
 const STATUS_COLORS = {
-  missing: '#e74c3c',
-  auto: '#f39c12',
-  manual: '#3498db',
-  reviewed: '#27ae60',
+  missing: '#c0392b',
+  has_lyrics: '#2e8b57',
 };
 
-export default function SongTable({ songs, selected, onSelect, onOpen }) {
+export default function SongTable({
+  songs,
+  selected,
+  onSelect,
+  onOpen,
+  groupByArtist = false,
+}) {
   const allSelected = songs.length > 0 && selected.size === songs.length;
 
   const toggleAll = () => {
@@ -52,74 +54,87 @@ export default function SongTable({ songs, selected, onSelect, onOpen }) {
             <th style={styles.th}>Album</th>
             <th style={{ ...styles.th, ...styles.yearCol }}>Year</th>
             <th style={styles.th}>Lyrics</th>
-            <th style={{ ...styles.th, ...styles.printCol }}>Print</th>
             <th style={{ ...styles.th, ...styles.spotifyCol }}>Spotify</th>
           </tr>
         </thead>
 
         <tbody>
-          {songs.map((song, index) => (
-            <tr
-              key={song.id}
-              style={styles.row}
-              onClick={() => onOpen(song.id)}
-            >
-              <td style={{ ...styles.td, ...styles.checkboxCol }} onClick={(e) => e.stopPropagation()}>
-                <input
-                  type="checkbox"
-                  checked={selected.has(song.id)}
-                  onChange={() => toggleOne(song.id)}
-                />
-              </td>
+          {songs.map((song, index) => {
+            const previousArtist =
+              index > 0 ? songs[index - 1].artist_name || 'Unknown Artist' : null;
+            const currentArtist = song.artist_name || 'Unknown Artist';
+            const status =
+              song.lyrics_status && song.lyrics_status !== 'missing'
+                ? 'has_lyrics'
+                : 'missing';
 
-              <td style={{ ...styles.td, ...styles.numCol }}>{index + 1}</td>
-
-              <td style={styles.td}>
-                <strong>{song.title}</strong>
-              </td>
-
-              <td style={styles.td}>{song.artist_name || '—'}</td>
-
-              <td style={styles.td}>{song.album_title || '—'}</td>
-
-              <td style={{ ...styles.td, ...styles.yearCol }}>
-                {song.year || '—'}
-              </td>
-
-              <td style={styles.td}>
-                <span
-                  style={{
-                    ...styles.badge,
-                    background: STATUS_COLORS[song.lyrics_status] || '#999',
-                  }}
-                >
-                  {STATUS_LABELS[song.lyrics_status] || song.lyrics_status || '—'}
-                </span>
-              </td>
-
-              <td style={{ ...styles.td, ...styles.printCol }}>
-                {song.is_print_ready ? '✓' : '—'}
-              </td>
-
-              <td
-                style={{ ...styles.td, ...styles.spotifyCol }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {song.spotify_url ? (
-                  <a
-                    href={song.spotify_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={styles.spotifyLink}
-                  >
-                    Open
-                  </a>
-                ) : (
-                  '—'
+            return (
+              <React.Fragment key={song.id}>
+                {groupByArtist && currentArtist !== previousArtist && (
+                  <tr>
+                    <td colSpan={8} style={styles.groupRow}>
+                      {currentArtist}
+                    </td>
+                  </tr>
                 )}
-              </td>
-            </tr>
-          ))}
+
+                <tr style={styles.row} onClick={() => onOpen(song.id)}>
+                  <td
+                    style={{ ...styles.td, ...styles.checkboxCol }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(song.id)}
+                      onChange={() => toggleOne(song.id)}
+                    />
+                  </td>
+
+                  <td style={{ ...styles.td, ...styles.numCol }}>{index + 1}</td>
+
+                  <td style={styles.td}>
+                    <strong>{song.title}</strong>
+                  </td>
+
+                  <td style={styles.td}>{song.artist_name || '-'}</td>
+
+                  <td style={styles.td}>{song.album_title || '-'}</td>
+
+                  <td style={{ ...styles.td, ...styles.yearCol }}>
+                    {song.year || '-'}
+                  </td>
+
+                  <td style={styles.td}>
+                    <span
+                      style={{
+                        ...styles.badge,
+                        background: STATUS_COLORS[status] || '#999',
+                      }}
+                    >
+                      {STATUS_LABELS[status] || status || '-'}
+                    </span>
+                  </td>
+                  <td
+                    style={{ ...styles.td, ...styles.spotifyCol }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {song.spotify_url ? (
+                      <a
+                        href={song.spotify_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={styles.spotifyLink}
+                      >
+                        Open
+                      </a>
+                    ) : (
+                      '-'
+                    )}
+                  </td>
+                </tr>
+              </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -151,6 +166,15 @@ const styles = {
   row: {
     transition: 'background .1s',
   },
+  groupRow: {
+    padding: '12px 10px',
+    background: '#f6f2ea',
+    color: '#3b3126',
+    fontWeight: 800,
+    borderTop: '1px solid #e0d6c7',
+    borderBottom: '1px solid #e0d6c7',
+    letterSpacing: '0.02em',
+  },
   badge: {
     padding: '2px 7px',
     borderRadius: 10,
@@ -170,11 +194,6 @@ const styles = {
   },
   yearCol: {
     width: 70,
-    whiteSpace: 'nowrap',
-  },
-  printCol: {
-    width: 70,
-    textAlign: 'center',
     whiteSpace: 'nowrap',
   },
   spotifyCol: {

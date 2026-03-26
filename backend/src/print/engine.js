@@ -1,24 +1,6 @@
 import puppeteer from 'puppeteer';
 import { sanitizeText } from '../utils/sanitize.js';
 
-/**
- * Supported config:
- * {
- *   format: 'A4' | 'A5',
- *   fontSize: 'small' | 'medium' | 'large',
- *   lineSpacing: 'tight' | 'normal' | 'loose',
- *   margins: 'narrow' | 'normal' | 'wide',
- *   cleanMode: boolean,
- *   performanceMode: boolean,
- *   includeToc: boolean,
- *   includeIndex: boolean,
- *   breakMode: 'one-per-page' | 'continuous',
- *   columns: 1 | 2,
- *   autoFontSize: boolean,
- *   titleSeparatePage: boolean
- * }
- */
-
 const FONT_SIZE_PRESETS = {
   small: 11,
   medium: 13,
@@ -50,6 +32,50 @@ function songIsHebrew(song) {
   );
 }
 
+function sortSongsForBook(songs = []) {
+  return [...songs].sort((a, b) => {
+    const artistCompare = String(a?.artist_name || '').localeCompare(String(b?.artist_name || ''));
+
+    if (artistCompare !== 0) {
+      return artistCompare;
+    }
+
+    return String(a?.title || '').localeCompare(String(b?.title || ''));
+  });
+}
+
+function chunk(items, size) {
+  const result = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    result.push(items.slice(index, index + size));
+  }
+
+  return result;
+}
+
+function normalizeSongsPerPage(config = {}) {
+  if (config.breakMode === 'one-per-page') {
+    return 1;
+  }
+
+  const requested = Number(config.songsPerPage);
+
+  if (!Number.isFinite(requested) || requested <= 1) {
+    return 1;
+  }
+
+  return Math.min(2, Math.round(requested));
+}
+
+function normalizeLyricsColumns(config = {}) {
+  if (config.layout === 'fit-one-page-two-columns' || Number(config.columns) === 2) {
+    return 2;
+  }
+
+  return 1;
+}
+
 function formatLyrics(text) {
   const safe = sanitizeText(text || '');
 
@@ -61,118 +87,96 @@ function formatLyrics(text) {
     .join('');
 }
 
-function songHeaderHtml(song, rtl, cleanMode) {
-  if (cleanMode) {
-    return '';
+function songCardHtml(song, { lyricsColumns = 1 } = {}) {
+  const rtl = songIsHebrew(song);
+  const metaParts = [song.album_title || 'Single', song.year ? String(song.year) : ''].filter(Boolean);
+
+  return `
+    <article id="song-${sanitizeText(song.id || '')}" class="song-card ${rtl ? 'rtl' : 'ltr'}">
+      <header class="song-header">
+        <div class="song-header-main">
+          <h2 class="song-title">${sanitizeText(song.title || '')}</h2>
+          <p class="song-artist">${sanitizeText(song.artist_name || 'Unknown Artist')}</p>
+          <p class="song-meta">${sanitizeText(metaParts.join(' | '))}</p>
+        </div>
+      </header>
+
+      <div class="song-lyrics lyrics-columns-${lyricsColumns}">
+        ${
+          song?.lyrics?.text
+            ? formatLyrics(song.lyrics.text)
+            : '<p class="missing">Lyrics not available.</p>'
+        }
+      </div>
+    </article>
+  `;
+}
+
+function groupedTocHtml(songs) {
+  const groups = new Map();
+
+  for (const song of songs) {
+    const artist = song.artist_name || 'Unknown Artist';
+    if (!groups.has(artist)) {
+      groups.set(artist, []);
+    }
+
+    groups.get(artist).push(song);
   }
 
-  return `
-    <div class="song-header ${rtl ? 'rtl' : 'ltr'}">
-      <h2 class="song-title">${sanitizeText(song.title || '')}</h2>
-      <p class="song-meta">
-        ${sanitizeText(song.artist_name || '')}${
-          song.album_title ? ` · <em>${sanitizeText(song.album_title)}</em>` : ''
-        }${song.year ? ` · ${sanitizeText(String(song.year))}` : ''}
-      </p>
-    </div>
-  `;
-}
-
-function songBlockHtml(song, config) {
-  const rtl = songIsHebrew(song);
-  const lyrics = song?.lyrics?.text || '';
-
-  const bodyHtml = lyrics
-    ? `<div class="lyrics ${rtl ? 'rtl' : 'ltr'}">${formatLyrics(lyrics)}</div>`
-    : `<p class="missing ${rtl ? 'rtl' : 'ltr'}">— lyrics not available —</p>`;
-
-  return `
-    <section class="song-page ${rtl ? 'rtl' : 'ltr'}">
-      ${songHeaderHtml(song, rtl, Boolean(config.cleanMode))}
-      ${bodyHtml}
-    </section>
-  `;
-}
-
-function tocHtml(songs) {
-  const rows = songs
+  const sections = [...groups.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
     .map(
-      (song, index) => `
-        <tr>
-          <td>${index + 1}</td>
-          <td>${sanitizeText(song.title || '')}</td>
-          <td>${sanitizeText(song.artist_name || '')}</td>
-        </tr>
+      ([artist, artistSongs]) => `
+        <section class="toc-group">
+          <h3>${sanitizeText(artist)}</h3>
+          ${artistSongs
+            .map(
+              (song) => `
+                <a class="toc-link" href="#song-${sanitizeText(song.id || '')}">
+                  ${sanitizeText(song.title || '')}
+                </a>
+              `
+            )
+            .join('')}
+        </section>
       `
     )
     .join('');
 
   return `
     <section class="front-page toc-page">
-      <h2>Table of Contents</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Title</th>
-            <th>Artist</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
+      <h1>Table of Contents</h1>
+      ${sections}
     </section>
   `;
 }
 
-function indexHtml(songs) {
-  const sorted = [...songs].sort((a, b) =>
-    String(a.title || '').localeCompare(String(b.title || ''))
-  );
+function bookPagesHtml(songs, { songsPerPage, lyricsColumns }) {
+  const pageClass = songsPerPage === 1 ? 'page-single' : 'page-spread';
 
-  const rows = sorted
+  return chunk(songs, songsPerPage)
     .map(
-      (song) => `
-        <tr>
-          <td>${sanitizeText(song.title || '')}</td>
-          <td>${sanitizeText(song.artist_name || '')}</td>
-        </tr>
+      (pageSongs) => `
+        <section class="${pageClass}">
+          ${pageSongs
+            .map((song) => songCardHtml(song, { lyricsColumns }))
+            .join('')}
+        </section>
       `
     )
     .join('');
-
-  return `
-    <section class="front-page index-page">
-      <h2>Alphabetical Index</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Title</th>
-            <th>Artist</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </section>
-  `;
 }
 
-function buildHtml(songs, config) {
+function buildHtml(inputSongs, config) {
+  const songs = sortSongsForBook(inputSongs);
   const format = config.format || 'A4';
   const margin = MARGIN_PRESETS[config.margins] || MARGIN_PRESETS.normal;
   const baseFontSize = FONT_SIZE_PRESETS[config.fontSize] || FONT_SIZE_PRESETS.medium;
   const lineHeight = LINE_HEIGHT_PRESETS[config.lineSpacing] || LINE_HEIGHT_PRESETS.normal;
-  const columns = config.performanceMode ? 1 : Math.max(1, Math.min(2, Number(config.columns) || 2));
-  const autoFontSize = config.autoFontSize !== false;
-  const includeToc = Boolean(config.includeToc);
-  const includeIndex = Boolean(config.includeIndex);
-  const pageMode = config.breakMode !== 'continuous';
-
-  const frontMatter = [
-    includeToc ? tocHtml(songs) : '',
-    includeIndex ? indexHtml(songs) : '',
-  ].join('\n');
-
-  const songsHtml = songs.map((song) => songBlockHtml(song, config)).join('\n');
+  const includeToc = config.includeToc !== false;
+  const songsPerPage = normalizeSongsPerPage(config);
+  const lyricsColumns = songsPerPage === 1 ? normalizeLyricsColumns(config) : 1;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -207,66 +211,105 @@ function buildHtml(songs, config) {
   }
 
   .front-page,
-  .song-page {
-    page-break-inside: avoid;
-    break-inside: avoid-page;
-  }
-
-  .front-page {
+  .page-single,
+  .page-spread {
     page-break-after: always;
     break-after: page;
   }
 
-  .front-page:last-child {
+  .page-single:last-child,
+  .page-spread:last-child {
     page-break-after: auto;
     break-after: auto;
   }
 
-  .song-page {
-    overflow: hidden;
-    ${pageMode ? 'page-break-after: always; break-after: page;' : 'margin-bottom: 10mm;'}
+  .front-page h1 {
+    margin: 0 0 6mm 0;
   }
 
-  .song-page:last-child {
-    page-break-after: auto;
-    break-after: auto;
+  .toc-group {
+    margin-bottom: 5mm;
+    break-inside: avoid;
+  }
+
+  .toc-group h3 {
+    margin: 0 0 2mm 0;
+    font-size: 1.05em;
+  }
+
+  .toc-link {
+    display: block;
+    color: #222;
+    text-decoration: none;
+    margin: 0 0 1.5mm 0;
+  }
+
+  .page-single {
+    display: grid;
+    gap: 8mm;
+  }
+
+  .page-spread {
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 8mm;
+    min-height: calc(297mm - (2 * ${margin}));
+  }
+
+  .song-card {
+    border: 1px solid #d5d5d5;
+    border-radius: 4mm;
+    padding: 5mm 6mm;
+    min-height: 0;
+    break-inside: avoid;
   }
 
   .song-header {
     margin-bottom: 4mm;
-    break-after: avoid;
-    page-break-after: avoid;
+    border-bottom: 1px solid #ececec;
+    padding-bottom: 3mm;
+  }
+
+  .song-header-main {
+    display: grid;
+    gap: 1.5mm;
   }
 
   .song-title {
-    margin: 0 0 1.2mm 0;
+    margin: 0;
     font-size: 1.25em;
+  }
+
+  .song-artist {
+    margin: 0;
+    color: #333;
+    font-size: 0.98em;
     font-weight: 700;
   }
 
   .song-meta {
     margin: 0;
-    font-size: 0.9em;
     color: #555;
+    font-size: 0.9em;
   }
 
-  .lyrics {
-    column-count: ${columns};
-    column-gap: 10mm;
-    column-fill: auto;
-    break-inside: avoid-page;
+  .song-lyrics {
+    white-space: normal;
+  }
+
+  .lyrics-columns-2 {
+    column-count: 2;
+    column-gap: 6mm;
   }
 
   .verse {
     margin: 0 0 3mm 0;
     break-inside: avoid;
-    page-break-inside: avoid;
   }
 
   .missing {
-    color: #888;
+    color: #777;
     font-style: italic;
-    margin: 0;
   }
 
   .rtl {
@@ -278,87 +321,13 @@ function buildHtml(songs, config) {
     direction: ltr;
     text-align: left;
   }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.92em;
-  }
-
-  th, td {
-    border-bottom: 1px solid #ccc;
-    padding: 2.2mm 2.5mm;
-    text-align: left;
-    vertical-align: top;
-  }
-
-  th {
-    background: #f5f5f5;
-  }
-
-  .toc-page h2,
-  .index-page h2 {
-    margin: 0 0 4mm 0;
-  }
 </style>
 </head>
 <body>
   <div class="book">
-    ${frontMatter}
-    ${songsHtml}
+    ${includeToc ? groupedTocHtml(songs) : ''}
+    ${bookPagesHtml(songs, { songsPerPage, lyricsColumns })}
   </div>
-
-  ${
-    autoFontSize
-      ? `
-  <script>
-    (function () {
-      const MIN_FONT_SIZE = 8;
-      const MIN_LINE_HEIGHT = 1.1;
-      const SHRINK_STEP = 0.5;
-      const LINE_STEP = 0.03;
-
-      const pages = Array.from(document.querySelectorAll('.song-page'));
-
-      function pxToNumber(value) {
-        return Number(String(value || '').replace('px', '')) || 0;
-      }
-
-      function applyFit(page) {
-        let loops = 0;
-
-        while (page.scrollHeight > page.clientHeight && loops < 40) {
-          const bodyStyle = window.getComputedStyle(document.body);
-          const currentFontSize = pxToNumber(bodyStyle.fontSize);
-          const currentLineHeightRaw = window.getComputedStyle(document.body).lineHeight;
-          const currentLineHeightPx = pxToNumber(currentLineHeightRaw);
-          const currentLineHeightRatio =
-            currentFontSize > 0 && currentLineHeightPx > 0
-              ? currentLineHeightPx / currentFontSize
-              : ${lineHeight};
-
-          if (currentFontSize <= MIN_FONT_SIZE) {
-            break;
-          }
-
-          const nextFontSize = Math.max(MIN_FONT_SIZE, currentFontSize - SHRINK_STEP);
-          const nextLineHeight = Math.max(MIN_LINE_HEIGHT, currentLineHeightRatio - LINE_STEP);
-
-          document.body.style.fontSize = nextFontSize + 'px';
-          document.body.style.lineHeight = String(nextLineHeight);
-
-          loops += 1;
-        }
-      }
-
-      for (const page of pages) {
-        applyFit(page);
-      }
-    })();
-  </script>
-  `
-      : ''
-  }
 </body>
 </html>`;
 }
@@ -375,7 +344,7 @@ export async function generatePdf(songs, config = {}) {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
 
-    const pdf = await page.pdf({
+    return await page.pdf({
       format: config.format || 'A4',
       printBackground: true,
       preferCSSPageSize: true,
@@ -387,8 +356,6 @@ export async function generatePdf(songs, config = {}) {
         left: '0mm',
       },
     });
-
-    return pdf;
   } finally {
     await browser.close();
   }

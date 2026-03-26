@@ -1,17 +1,21 @@
 /**
  * Normalize a string for matching:
- * lowercase, strip punctuation, collapse whitespace,
+ * lowercase, keep letters/numbers from all languages,
+ * strip diacritics and punctuation, collapse whitespace,
  * remove "feat.", "ft.", "featuring" credits.
  */
 export function normalize(str = '') {
-  return str
+  return String(str || '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
     .toLowerCase()
     .replace(/\(feat\..*?\)/gi, '')
     .replace(/\[feat\..*?\]/gi, '')
     .replace(/feat\..*?(?=\s|$)/gi, '')
     .replace(/\bft\..*?(?=\s|$)/gi, '')
     .replace(/\bfeaturing\b.*?(?=\s|$)/gi, '')
-    .replace(/[^\w\s]/g, '')
+    .replace(/_/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

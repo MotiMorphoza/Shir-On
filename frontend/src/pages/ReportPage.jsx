@@ -1,111 +1,110 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
+import BackToLibraryButton from '../components/BackToLibraryButton.jsx';
 
-function niceReason(reason) {
-  const map = {
-    created: 'Created',
-    existing_spotify_id: 'Existing Spotify ID',
-    existing_title_artist: 'Existing title + artist',
-    invalid_track_payload: 'Invalid track payload',
-    failed_insert: 'Insert failed',
-    no_result: 'No result',
-    ok: 'Matched',
-    error: 'Error',
-    query_variant: 'Query Variant',
-  };
-
-  return map[reason] || reason || '—';
+function formatDuration(value) {
+  const ms = Number(value || 0);
+  if (!ms) return '-';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
-function niceAction(action) {
-  const map = {
-    imported: 'Imported',
-    skipped: 'Skipped',
-    invalid: 'Invalid',
-    error: 'Error',
-  };
-
-  return map[action] || action || '—';
+function isPassedResult(result) {
+  return ['success', 'imported', 'linked_existing'].includes(result);
 }
 
-function toneForRow(row) {
-  if (row.action === 'imported') return '#1e8449';
-  if (row.action === 'error') return '#c0392b';
-  if (row.reason === 'existing_spotify_id' || row.reason === 'existing_title_artist') return '#b9770e';
-  if (row.action === 'invalid') return '#7d3c98';
-  return '#555';
+function isBlockedResult(result) {
+  return ['fail', 'error', 'invalid', 'skipped'].includes(result);
 }
 
-function rowKey(row, index) {
-  return [
-    row.spotify_id || '',
-    row.provider || '',
-    row.title || '',
-    row.artist || '',
-    index,
-  ].join('::');
+function formatResultLabel(result) {
+  switch (result) {
+    case 'linked_existing':
+      return 'Linked existing';
+    case 'imported':
+      return 'Imported';
+    case 'success':
+      return 'Success';
+    case 'fail':
+      return 'Failed';
+    case 'invalid':
+      return 'Invalid';
+    case 'error':
+      return 'Error';
+    case 'skipped':
+      return 'Skipped';
+    default:
+      return result || '-';
+  }
 }
 
-function renderSummaryLine(summary) {
-  if (!summary || typeof summary !== 'object') {
-    return '—';
+function formatReasonLabel(reason) {
+  switch (reason) {
+    case 'existing_spotify_id':
+      return 'Already exists by Spotify ID';
+    case 'existing_title_artist':
+      return 'Already exists by title + artist';
+    case 'invalid_track_payload':
+      return 'Invalid song payload';
+    case 'failed_insert':
+      return 'Failed to save song';
+    case 'created':
+      return 'Created';
+    case 'no_result':
+      return 'No lyrics found';
+    default:
+      return reason || 'No reason';
+  }
+}
+
+function buildReasonCounts(entries) {
+  const counts = {};
+
+  for (const entry of entries) {
+    const key = entry.failure_reason || 'unknown';
+    counts[key] = (counts[key] || 0) + 1;
   }
 
-  const parts = [];
-
-  if (summary.found !== undefined) parts.push(`Found: ${summary.found}`);
-  if (summary.imported !== undefined) parts.push(`Imported: ${summary.imported}`);
-  if (summary.skipped !== undefined) parts.push(`Skipped: ${summary.skipped}`);
-  if (summary.invalid !== undefined) parts.push(`Invalid: ${summary.invalid}`);
-  if (summary.errors !== undefined) parts.push(`Errors: ${summary.errors}`);
-  if (summary.fetched !== undefined) parts.push(`Fetched: ${summary.fetched ? 'Yes' : 'No'}`);
-
-  if (summary.skipped_existing_spotify_id !== undefined) {
-    parts.push(`Existing Spotify ID: ${summary.skipped_existing_spotify_id}`);
-  }
-  if (summary.skipped_existing_title_artist !== undefined) {
-    parts.push(`Existing title + artist: ${summary.skipped_existing_title_artist}`);
-  }
-
-  return parts.join(' · ') || '—';
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([reason, count]) => ({
+      reason,
+      count,
+      label: formatReasonLabel(reason),
+    }));
 }
 
-function matchesSearch(row, q) {
-  if (!q) return true;
+function buildReportProviderStats(report) {
+  return Array.isArray(report?.provider_stats_current) ? report.provider_stats_current : [];
+}
 
-  const hay = [
-    row.title,
-    row.artist,
-    row.album,
-    row.reason,
-    row.error,
-    row.provider,
-    row.spotify_id,
-    row.query_variant,
-    row.query_title,
-    row.query_artist,
-    row.matched_song_id,
-    row.matched_title,
-    row.matched_artist,
-    row.normalized_title,
-    row.normalized_artist,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
+function formatReportKind(report) {
+  if (report?.type === 'lyrics_fetch') {
+    return 'Lyrics Fetch';
+  }
 
-  return hay.includes(q);
+  if (report?.type === 'import') {
+    return 'Import';
+  }
+
+  return report?.type || 'unknown';
+}
+
+function formatReportSubtype(report) {
+  if (report?.type === 'lyrics_fetch') {
+    return 'Fetch';
+  }
+
+  return report?.subtype || 'report';
 }
 
 export default function ReportPage() {
   const { id } = useParams();
-  const navigate = useNavigate();
-
   const [report, setReport] = useState(null);
-  const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
-  const [showOnlyProblems, setShowOnlyProblems] = useState(false);
+  const [resultFilter, setResultFilter] = useState('all');
+  const [reasonFilter, setReasonFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -139,281 +138,279 @@ export default function ReportPage() {
     };
   }, [id]);
 
-  const rows = Array.isArray(report?.rows) ? report.rows : [];
+  const entries = Array.isArray(report?.entries) ? report.entries : [];
   const q = search.trim().toLowerCase();
+  const providerStats = useMemo(() => buildReportProviderStats(report), [report]);
 
-  const filteredRows = useMemo(() => {
-    let next = rows;
+  const passedEntries = useMemo(
+    () => entries.filter((entry) => isPassedResult(entry.result)),
+    [entries]
+  );
+  const blockedEntries = useMemo(
+    () => entries.filter((entry) => isBlockedResult(entry.result)),
+    [entries]
+  );
+  const blockedReasonOptions = useMemo(
+    () => buildReasonCounts(blockedEntries),
+    [blockedEntries]
+  );
 
-    if (filter !== 'all') {
-      next = next.filter((row) => row.action === filter);
+  const filtered = useMemo(() => {
+    let list = entries;
+
+    if (resultFilter === 'passed') {
+      list = list.filter((entry) => isPassedResult(entry.result));
+    } else if (resultFilter === 'blocked') {
+      list = list.filter((entry) => isBlockedResult(entry.result));
     }
 
-    if (showOnlyProblems) {
-      next = next.filter(
-        (row) =>
-          row.action === 'skipped' ||
-          row.action === 'invalid' ||
-          row.action === 'error'
-      );
+    if (reasonFilter !== 'all') {
+      list = list.filter((entry) => (entry.failure_reason || 'unknown') === reasonFilter);
     }
 
-    if (q) {
-      next = next.filter((row) => matchesSearch(row, q));
+    if (!q) {
+      return list;
     }
 
-    return next;
-  }, [rows, filter, q, showOnlyProblems]);
+    return list.filter((entry) =>
+      [
+        entry.original_title,
+        entry.original_artist,
+        entry.provider_used,
+        entry.failure_reason,
+        formatResultLabel(entry.result),
+        ...(entry.provider_plan || []),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [entries, q, reasonFilter, resultFilter]);
 
-  const summary = report?.summary || {};
-  const isImportReport = report?.type === 'import';
-  const isLyricsReport = report?.type === 'lyrics_fetch';
+  const summaryCards = [
+    {
+      label: 'Total',
+      value: report?.summary?.total ?? report?.summary?.found ?? entries.length,
+    },
+    {
+      label: report?.type === 'import' ? 'Passed' : 'Success',
+      value:
+        report?.summary?.passed ??
+        report?.summary?.fetched ??
+        passedEntries.length,
+    },
+    {
+      label: report?.type === 'import' ? 'Linked Existing' : 'Failed',
+      value:
+        report?.type === 'import'
+          ? report?.summary?.linked_existing ?? entries.filter((entry) => entry.result === 'linked_existing').length
+          : report?.summary?.failed ?? blockedEntries.length,
+    },
+    {
+      label: report?.type === 'import' ? 'Blocked' : 'Avg time',
+      value:
+        report?.type === 'import'
+          ? report?.summary?.blocked ?? blockedEntries.length
+          : formatDuration(report?.summary?.avg_duration_ms),
+    },
+  ];
 
   return (
     <div style={styles.page}>
-      <button type="button" style={styles.back} onClick={() => navigate('/reports')}>
-        ← Reports
-      </button>
+      <header style={styles.header}>
+        <div>
+          <p style={styles.eyebrow}>Report</p>
+          <h1 style={styles.title}>{report?.label || report?.source_id || id}</h1>
+          <p style={styles.subTitle}>
+            {formatReportKind(report)} / {formatReportSubtype(report)} | {entries.length} entries
+          </p>
+        </div>
 
-      <h2 style={styles.title}>
-        {isImportReport ? 'Import Report' : isLyricsReport ? 'Lyrics Fetch Report' : 'Report'}
-      </h2>
+        <div style={styles.actions}>
+          <BackToLibraryButton />
+          <Link to="/reports" style={styles.secondaryLink}>
+            All Reports
+          </Link>
+          <Link to="/lyrics-run" style={styles.secondaryLink}>
+            New Lyrics Fetch
+          </Link>
+        </div>
+      </header>
 
-      {loading && <p style={styles.info}>Loading report…</p>}
+      {loading && <p style={styles.info}>Loading report...</p>}
       {error && <p style={styles.error}>{error}</p>}
 
-      {!loading && report && (
+      {report && (
         <>
-          <div style={styles.meta}>
-            <div><strong>ID:</strong> {report.id}</div>
-            <div><strong>Type:</strong> {report.type || '—'}</div>
-            <div><strong>Subtype:</strong> {report.subtype || '—'}</div>
-            <div><strong>Source:</strong> {report.source_id || report.title || '—'}</div>
-            <div><strong>Created:</strong> {report.created_at || '—'}</div>
-          </div>
-
-          <div style={styles.summaryBar}>
-            <strong>Summary:</strong> {renderSummaryLine(summary)}
-          </div>
-
-          <div style={styles.cards}>
-            <div style={styles.card}>
-              <strong>All rows</strong>
-              <div>{rows.length}</div>
-            </div>
-
-            {summary.found !== undefined && (
-              <div style={styles.card}>
-                <strong>Found</strong>
-                <div>{Number(summary.found || 0)}</div>
+          <div style={styles.summaryGrid}>
+            {summaryCards.map((card) => (
+              <div key={card.label} style={styles.summaryCard}>
+                <strong>{card.value}</strong>
+                <span>{card.label}</span>
               </div>
-            )}
-
-            {summary.imported !== undefined && (
-              <div style={styles.cardGreen}>
-                <strong>Imported</strong>
-                <div>{Number(summary.imported || 0)}</div>
-              </div>
-            )}
-
-            {summary.skipped !== undefined && (
-              <div style={styles.cardAmber}>
-                <strong>Skipped</strong>
-                <div>{Number(summary.skipped || 0)}</div>
-              </div>
-            )}
-
-            {summary.invalid !== undefined && (
-              <div style={styles.cardPurple}>
-                <strong>Invalid</strong>
-                <div>{Number(summary.invalid || 0)}</div>
-              </div>
-            )}
-
-            {summary.errors !== undefined && (
-              <div style={styles.cardRed}>
-                <strong>Errors</strong>
-                <div>{Number(summary.errors || 0)}</div>
-              </div>
-            )}
-
-            {summary.skipped_existing_spotify_id !== undefined && (
-              <div style={styles.cardSmall}>
-                <strong>Existing Spotify ID</strong>
-                <div>{Number(summary.skipped_existing_spotify_id || 0)}</div>
-              </div>
-            )}
-
-            {summary.skipped_existing_title_artist !== undefined && (
-              <div style={styles.cardSmall}>
-                <strong>Existing title + artist</strong>
-                <div>{Number(summary.skipped_existing_title_artist || 0)}</div>
-              </div>
-            )}
+            ))}
           </div>
 
           <div style={styles.toolbar}>
-            <div style={styles.filters}>
-              <button
-                type="button"
-                style={filter === 'all' ? styles.activeFilter : styles.filterBtn}
-                onClick={() => setFilter('all')}
-              >
-                All
-              </button>
-              <button
-                type="button"
-                style={filter === 'imported' ? styles.activeFilter : styles.filterBtn}
-                onClick={() => setFilter('imported')}
-              >
-                Imported
-              </button>
-              <button
-                type="button"
-                style={filter === 'skipped' ? styles.activeFilter : styles.filterBtn}
-                onClick={() => setFilter('skipped')}
-              >
-                Skipped
-              </button>
-              <button
-                type="button"
-                style={filter === 'invalid' ? styles.activeFilter : styles.filterBtn}
-                onClick={() => setFilter('invalid')}
-              >
-                Invalid
-              </button>
-              <button
-                type="button"
-                style={filter === 'error' ? styles.activeFilter : styles.filterBtn}
-                onClick={() => setFilter('error')}
-              >
-                Error
-              </button>
-            </div>
-
-            <div style={styles.searchWrap}>
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search title, artist, album, reason, spotify id…"
-                style={styles.searchInput}
-              />
-
-              <label style={styles.checkLabel}>
-                <input
-                  type="checkbox"
-                  checked={showOnlyProblems}
-                  onChange={(e) => setShowOnlyProblems(e.target.checked)}
-                />
-                Problems only
-              </label>
-            </div>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search title, artist, provider, reason..."
+              style={styles.search}
+            />
           </div>
 
-          <div style={styles.resultCount}>
-            Showing {filteredRows.length} / {rows.length} row(s)
+          <div style={styles.filtersBlock}>
+            <div style={styles.filterGroup}>
+              <span style={styles.filterLabel}>Show</span>
+              <div style={styles.chips}>
+                <button
+                  type="button"
+                  style={resultFilter === 'all' ? styles.activeChip : styles.chip}
+                  onClick={() => {
+                    setResultFilter('all');
+                    setReasonFilter('all');
+                  }}
+                >
+                  All ({entries.length})
+                </button>
+                <button
+                  type="button"
+                  style={resultFilter === 'passed' ? styles.activeChip : styles.chip}
+                  onClick={() => {
+                    setResultFilter('passed');
+                    setReasonFilter('all');
+                  }}
+                >
+                  Passed ({passedEntries.length})
+                </button>
+                <button
+                  type="button"
+                  style={resultFilter === 'blocked' ? styles.activeChip : styles.chip}
+                  onClick={() => setResultFilter('blocked')}
+                >
+                  Blocked ({blockedEntries.length})
+                </button>
+              </div>
+            </div>
+
+            {blockedReasonOptions.length > 0 && (
+              <div style={styles.filterGroup}>
+                <span style={styles.filterLabel}>Blocked reasons</span>
+                <div style={styles.chips}>
+                  <button
+                    type="button"
+                    style={reasonFilter === 'all' ? styles.activeChip : styles.chip}
+                    onClick={() => setReasonFilter('all')}
+                  >
+                    All reasons
+                  </button>
+                  {blockedReasonOptions.map((item) => (
+                    <button
+                      key={item.reason}
+                      type="button"
+                      style={reasonFilter === item.reason ? styles.activeChip : styles.chip}
+                      onClick={() => {
+                        setResultFilter('blocked');
+                        setReasonFilter(item.reason);
+                      }}
+                    >
+                      {item.label} ({item.count})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
+
+          {report.type === 'lyrics_fetch' && providerStats.length > 0 && (
+            <section style={styles.providerSection}>
+              <div style={styles.providerSectionHeader}>
+                <div>
+                  <strong style={styles.providerSectionTitle}>Providers In This Fetch</strong>
+                  <p style={styles.providerSectionHint}>
+                    Attempted and winning providers for the current lyrics fetch only.
+                  </p>
+                </div>
+              </div>
+
+              <div style={styles.providerTableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Provider</th>
+                      <th style={styles.th}>Attempts</th>
+                      <th style={styles.th}>Wins</th>
+                      <th style={styles.th}>Success</th>
+                      <th style={styles.th}>Avg Time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {providerStats.map((row) => (
+                      <tr key={row.provider}>
+                        <td style={styles.td}>{row.provider}</td>
+                        <td style={styles.td}>{row.attempts}</td>
+                        <td style={styles.td}>{row.wins || 0}</td>
+                        <td style={styles.td}>{Math.round(Number(row.success_rate || 0) * 100)}%</td>
+                        <td style={styles.td}>{formatDuration(row.avg_duration_ms)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
 
           <div style={styles.tableWrap}>
             <table style={styles.table}>
               <thead>
                 <tr>
-                  <th style={styles.th}>#</th>
-                  <th style={styles.th}>Title</th>
-                  <th style={styles.th}>Artist</th>
-                  <th style={styles.th}>Album</th>
-                  <th style={styles.th}>Action</th>
-                  <th style={styles.th}>Reason</th>
+                  <th style={styles.th}>Song</th>
+                  <th style={styles.th}>Result</th>
                   <th style={styles.th}>Provider</th>
-                  <th style={styles.th}>Spotify ID</th>
-                  <th style={styles.th}>Matched Existing</th>
-                  <th style={styles.th}>Normalized</th>
-                  <th style={styles.th}>Query Used</th>
-                  <th style={styles.th}>Error</th>
+                  <th style={styles.th}>Provider Plan</th>
+                  <th style={styles.th}>Duration</th>
+                  <th style={styles.th}>Reason</th>
+                  <th style={styles.th}>Open</th>
                 </tr>
               </thead>
-
               <tbody>
-                {filteredRows.map((row, index) => (
-                  <tr key={rowKey(row, index)}>
-                    <td style={styles.td}>{index + 1}</td>
-
+                {filtered.map((entry, index) => (
+                  <tr key={`${entry.song_id || 'entry'}-${entry.original_title}-${index}`}>
                     <td style={styles.td}>
-                      <div style={styles.mainCell}>{row.title || '—'}</div>
+                      <div style={styles.songCell}>
+                        <strong>{entry.original_title || '-'}</strong>
+                        <span>{entry.original_artist || '-'}</span>
+                      </div>
                     </td>
-
+                    <td style={styles.td}>{formatResultLabel(entry.result)}</td>
+                    <td style={styles.td}>{entry.provider_used || '-'}</td>
+                    <td style={styles.td}>{(entry.provider_plan || []).join(' -> ') || '-'}</td>
+                    <td style={styles.td}>{formatDuration(entry.duration_ms)}</td>
+                    <td style={styles.td}>{formatReasonLabel(entry.failure_reason)}</td>
                     <td style={styles.td}>
-                      <div style={styles.mainCell}>{row.artist || '—'}</div>
-                    </td>
-
-                    <td style={styles.td}>
-                      <div style={styles.mainCell}>{row.album || '—'}</div>
-                    </td>
-
-                    <td style={{ ...styles.td, color: toneForRow(row), fontWeight: 700 }}>
-                      {niceAction(row.action)}
-                    </td>
-
-                    <td style={styles.td}>
-                      <div style={styles.mainCell}>{niceReason(row.reason)}</div>
-                    </td>
-
-                    <td style={styles.td}>
-                      <div style={styles.mono}>{row.provider || '—'}</div>
-                    </td>
-
-                    <td style={styles.td}>
-                      <div style={styles.mono}>{row.spotify_id || '—'}</div>
-                    </td>
-
-                    <td style={styles.td}>
-                      {row.matched_song_id || row.matched_title || row.matched_artist ? (
-                        <div style={styles.stack}>
-                          <div><strong>ID:</strong> {row.matched_song_id || '—'}</div>
-                          <div><strong>Title:</strong> {row.matched_title || '—'}</div>
-                          <div><strong>Artist:</strong> {row.matched_artist || '—'}</div>
-                        </div>
+                      {entry.song_id ? (
+                        <Link to={`/songs/${entry.song_id}`} style={styles.openLink}>
+                          Song
+                        </Link>
                       ) : (
-                        '—'
+                        '-'
                       )}
-                    </td>
-
-                    <td style={styles.td}>
-                      {row.normalized_title || row.normalized_artist ? (
-                        <div style={styles.stack}>
-                          <div><strong>Title:</strong> {row.normalized_title || '—'}</div>
-                          <div><strong>Artist:</strong> {row.normalized_artist || '—'}</div>
-                        </div>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-
-                    <td style={styles.td}>
-                      {row.query_variant || row.query_title || row.query_artist ? (
-                        <div style={styles.stack}>
-                          <div><strong>Variant:</strong> {row.query_variant || '—'}</div>
-                          <div><strong>Title:</strong> {row.query_title || '—'}</div>
-                          <div><strong>Artist:</strong> {row.query_artist || '—'}</div>
-                        </div>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-
-                    <td style={styles.tdError}>
-                      <div style={styles.mainCell}>{row.error || '—'}</div>
                     </td>
                   </tr>
                 ))}
+                {!filtered.length && (
+                  <tr>
+                    <td style={styles.emptyCell} colSpan={7}>
+                      No entries match the current filter.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
-
-          {!filteredRows.length && (
-            <p style={styles.info}>No rows match the current filters.</p>
-          )}
         </>
       )}
     </div>
@@ -422,187 +419,175 @@ export default function ReportPage() {
 
 const styles = {
   page: {
-    maxWidth: 1700,
+    maxWidth: 1320,
     margin: '0 auto',
-    padding: '24px 16px 48px',
+    padding: '28px 20px 48px',
   },
-  back: {
-    background: 'none',
-    border: 'none',
-    color: '#3498db',
-    cursor: 'pointer',
-    padding: 0,
-    marginBottom: 12,
-    fontSize: 14,
-  },
-  title: {
-    marginTop: 0,
-    marginBottom: 18,
-  },
-  meta: {
-    display: 'flex',
-    gap: 20,
-    flexWrap: 'wrap',
-    marginBottom: 16,
-    color: '#555',
-  },
-  summaryBar: {
-    marginBottom: 16,
-    padding: '12px 14px',
-    border: '1px solid #dfe6e9',
-    borderRadius: 8,
-    background: '#fafafa',
-  },
-  cards: {
-    display: 'flex',
-    gap: 12,
-    flexWrap: 'wrap',
-    marginBottom: 16,
-  },
-  card: {
-    minWidth: 120,
-    padding: '12px 14px',
-    background: '#f8f9fa',
-    border: '1px solid #ddd',
-    borderRadius: 8,
-  },
-  cardGreen: {
-    minWidth: 120,
-    padding: '12px 14px',
-    background: '#eafaf1',
-    border: '1px solid #a9dfbf',
-    borderRadius: 8,
-  },
-  cardAmber: {
-    minWidth: 120,
-    padding: '12px 14px',
-    background: '#fef5e7',
-    border: '1px solid #f8c471',
-    borderRadius: 8,
-  },
-  cardPurple: {
-    minWidth: 120,
-    padding: '12px 14px',
-    background: '#f5eef8',
-    border: '1px solid #d2b4de',
-    borderRadius: 8,
-  },
-  cardRed: {
-    minWidth: 120,
-    padding: '12px 14px',
-    background: '#fdedec',
-    border: '1px solid #f5b7b1',
-    borderRadius: 8,
-  },
-  cardSmall: {
-    minWidth: 180,
-    padding: '12px 14px',
-    background: '#fff',
-    border: '1px solid #e0e0e0',
-    borderRadius: 8,
-  },
-  toolbar: {
+  header: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     gap: 16,
+    marginBottom: 20,
     flexWrap: 'wrap',
+  },
+  eyebrow: {
+    margin: 0,
+    color: '#8a6f3f',
+    textTransform: 'uppercase',
+    letterSpacing: '0.12em',
+    fontSize: 12,
+    fontWeight: 700,
+  },
+  title: {
+    margin: '6px 0 8px',
+    fontSize: 34,
+    color: '#2c241b',
+  },
+  subTitle: {
+    margin: 0,
+    color: '#6b6053',
+  },
+  actions: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  secondaryLink: {
+    padding: '10px 14px',
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.22)',
+    background: '#fff',
+    color: '#3b332a',
+    fontWeight: 700,
+    textDecoration: 'none',
+  },
+  summaryGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+    gap: 12,
+    marginBottom: 16,
+  },
+  summaryCard: {
+    display: 'grid',
+    gap: 4,
+    padding: '16px 18px',
+    borderRadius: 18,
+    background: '#fffefb',
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+  },
+  toolbar: {
     marginBottom: 12,
   },
-  filters: {
+  search: {
+    width: '100%',
+    maxWidth: 420,
+    padding: '10px 12px',
+    borderRadius: 12,
+    border: '1px solid #d2c7b7',
+    background: '#fff',
+  },
+  filtersBlock: {
+    display: 'grid',
+    gap: 12,
+    marginBottom: 14,
+  },
+  filterGroup: {
+    display: 'grid',
+    gap: 8,
+  },
+  filterLabel: {
+    fontSize: 12,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+    color: '#7d6c58',
+  },
+  chips: {
     display: 'flex',
     gap: 8,
     flexWrap: 'wrap',
   },
-  searchWrap: {
-    display: 'flex',
-    gap: 12,
-    alignItems: 'center',
-    flexWrap: 'wrap',
-  },
-  searchInput: {
-    width: 360,
-    maxWidth: '100%',
+  chip: {
     padding: '8px 12px',
-    border: '1px solid #ccc',
-    borderRadius: 4,
-  },
-  checkLabel: {
-    display: 'flex',
-    gap: 6,
-    alignItems: 'center',
-    fontSize: 14,
-    color: '#444',
-  },
-  resultCount: {
-    color: '#666',
-    marginBottom: 12,
-    fontSize: 14,
-  },
-  filterBtn: {
-    padding: '7px 12px',
-    border: '1px solid #ccc',
-    borderRadius: 4,
+    borderRadius: 999,
+    border: '1px solid rgba(114, 98, 78, 0.2)',
     background: '#fff',
+    color: '#4b4034',
     cursor: 'pointer',
+    fontWeight: 600,
   },
-  activeFilter: {
-    padding: '7px 12px',
-    border: '1px solid #3498db',
-    borderRadius: 4,
-    background: '#3498db',
+  activeChip: {
+    padding: '8px 12px',
+    borderRadius: 999,
+    border: '1px solid rgba(47, 107, 95, 0.2)',
+    background: '#2f6b5f',
     color: '#fff',
     cursor: 'pointer',
+    fontWeight: 700,
   },
   tableWrap: {
     overflowX: 'auto',
-    border: '1px solid #e5e5e5',
-    borderRadius: 8,
+    borderRadius: 18,
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    background: '#fffefb',
+  },
+  providerSection: {
+    marginBottom: 14,
+  },
+  providerSectionHeader: {
+    marginBottom: 10,
+  },
+  providerSectionTitle: {
+    display: 'block',
+    color: '#2f261c',
+  },
+  providerSectionHint: {
+    margin: '4px 0 0',
+    color: '#7c6d5d',
+    fontSize: 13,
+  },
+  providerTableWrap: {
+    overflowX: 'auto',
+    borderRadius: 18,
+    border: '1px solid rgba(114, 98, 78, 0.18)',
+    background: '#fffdf8',
+    marginBottom: 14,
   },
   table: {
     width: '100%',
     borderCollapse: 'collapse',
-    fontSize: 14,
   },
   th: {
     textAlign: 'left',
-    padding: '10px 12px',
-    background: '#f8f8f8',
-    borderBottom: '1px solid #ddd',
+    padding: '12px 14px',
+    background: '#faf5ec',
+    borderBottom: '1px solid rgba(114, 98, 78, 0.18)',
+    color: '#493d30',
     whiteSpace: 'nowrap',
-    verticalAlign: 'top',
   },
   td: {
-    padding: '8px 12px',
-    borderBottom: '1px solid #eee',
+    padding: '12px 14px',
+    borderBottom: '1px solid rgba(114, 98, 78, 0.12)',
     verticalAlign: 'top',
+    color: '#3c3126',
   },
-  tdError: {
-    padding: '8px 12px',
-    borderBottom: '1px solid #eee',
-    verticalAlign: 'top',
-    color: '#c0392b',
-  },
-  mainCell: {
-    minWidth: 140,
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-  },
-  mono: {
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-    fontSize: 12,
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-all',
-  },
-  stack: {
+  songCell: {
     display: 'grid',
     gap: 4,
-    minWidth: 180,
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
+  },
+  openLink: {
+    textDecoration: 'none',
+    color: '#2f6b5f',
+    fontWeight: 700,
+  },
+  emptyCell: {
+    padding: '18px 14px',
+    textAlign: 'center',
+    color: '#6b6053',
   },
   info: {
-    color: '#666',
+    color: '#6b6053',
   },
   error: {
     color: '#c0392b',

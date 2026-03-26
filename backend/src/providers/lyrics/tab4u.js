@@ -35,7 +35,7 @@ function buildAbsoluteUrl(href) {
 
 function extractCandidates(html) {
   const results = [];
-  const regex = /<a[^>]+href="([^"]*(?:\/lyrics\/songs\/|\/tabs\/songs\/)[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  const regex = /<a[^>]+href="([^"]*(?:\/?lyrics\/songs\/|\/?tabs\/songs\/)[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
 
   let match;
   while ((match = regex.exec(html))) {

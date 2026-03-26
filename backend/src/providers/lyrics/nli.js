@@ -187,8 +187,9 @@ export class NliProvider extends BaseLyricsProvider {
 
       return null;
     } catch (err) {
-      console.error('[nli] fetch failed:', err?.message || err);
-      return null;
+      const message = err?.message || 'NLI provider failed';
+      console.error('[nli] fetch failed:', message);
+      throw new Error(message);
     }
   }
 }

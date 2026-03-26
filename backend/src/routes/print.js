@@ -10,6 +10,18 @@ function parseSongIds(ids) {
   return ids.map(id => getSongById(id)).filter(Boolean);
 }
 
+function sortSongsForBook(songs = []) {
+  return [...songs].sort((a, b) => {
+    const artistCompare = String(a?.artist_name || '').localeCompare(String(b?.artist_name || ''));
+
+    if (artistCompare !== 0) {
+      return artistCompare;
+    }
+
+    return String(a?.title || '').localeCompare(String(b?.title || ''));
+  });
+}
+
 // POST /print/pdf
 // Body: { songIds?, collectionId?, filters?, config }
 router.post('/pdf', async (req, res) => {
@@ -24,9 +36,10 @@ router.post('/pdf', async (req, res) => {
     } else if (songIds?.length) {
       songs = parseSongIds(songIds) || [];
     } else {
-      // print all print-ready songs
-      songs = getSongs({ printReady: true, limit: 500 });
+      songs = getSongs({ limit: 2000, sort: 'artist' });
     }
+
+    songs = sortSongsForBook(songs);
 
     if (songs.length === 0)
       return res.status(400).json({ error: 'No songs to print' });

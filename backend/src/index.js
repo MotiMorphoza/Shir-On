@@ -17,22 +17,44 @@ const { default: spotifyRouter } = await import('./routes/spotify.js');
 const { default: printRouter } = await import('./routes/print.js');
 const { default: importRouter } = await import('./routes/import.js');
 const { default: collectionsRouter } = await import('./routes/collections.js');
+const { default: playlistsRouter } = await import('./routes/playlists.js');
 const { default: reportsRouter } = await import('./routes/reports.js');
+const { default: jobsRouter } = await import('./routes/jobs.js');
 const { default: db } = await import('./db/index.js');
+const { repairLyricsUniqueness, repairNormalizedFields } = await import('./db/repair.js');
 
 const schema = readFileSync(join(__dirname, 'db/schema.sql'), 'utf8');
 db.exec(schema);
+
+const repaired = repairNormalizedFields();
+const lyricsRepair = repairLyricsUniqueness();
+
+if (repaired.artists || repaired.albums || repaired.songs) {
+  console.log('Normalized-field repair applied:', repaired);
+}
+
+if (
+  lyricsRepair.removed_duplicates ||
+  lyricsRepair.dropped_legacy_index ||
+  lyricsRepair.created_unique_index
+) {
+  console.log('Lyrics uniqueness repair applied:', lyricsRepair);
+}
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
 
 const allowedOrigins = [
-  process.env.FRONTEND_URL?.trim(),
-  'http://127.0.0.1:5174',
-  'http://127.0.0.1:5173',
-  'http://localhost:5174',
-  'http://localhost:5173',
-].filter(Boolean);
+  ...new Set(
+    [
+      process.env.FRONTEND_URL?.trim(),
+      'http://127.0.0.1:5174',
+      'http://127.0.0.1:5173',
+      'http://localhost:5174',
+      'http://localhost:5173',
+    ].filter(Boolean)
+  ),
+];
 
 app.use(
   cors({
@@ -71,7 +93,9 @@ app.use('/api/spotify', spotifyRouter);
 app.use('/api/print', printRouter);
 app.use('/api/import', importRouter);
 app.use('/api/collections', collectionsRouter);
+app.use('/api/playlists', playlistsRouter);
 app.use('/api/reports', reportsRouter);
+app.use('/api/jobs', jobsRouter);
 
 app.get('/health', (_req, res) => {
   res.json({

@@ -76,6 +76,25 @@ CREATE TABLE IF NOT EXISTS collection_songs (
   PRIMARY KEY (collection_id, song_id)
 );
 
+CREATE TABLE IF NOT EXISTS playlists (
+  id          TEXT PRIMARY KEY,
+  spotify_id  TEXT UNIQUE,
+  name        TEXT NOT NULL,
+  normalized  TEXT NOT NULL,
+  description TEXT,
+  source_url  TEXT,
+  image_url   TEXT,
+  created_at  TEXT DEFAULT (datetime('now')),
+  updated_at  TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS playlist_songs (
+  playlist_id TEXT REFERENCES playlists(id) ON DELETE CASCADE,
+  song_id     TEXT REFERENCES songs(id)     ON DELETE CASCADE,
+  position    INTEGER DEFAULT 0,
+  PRIMARY KEY (playlist_id, song_id)
+);
+
 CREATE TABLE IF NOT EXISTS print_sets (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
@@ -94,4 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_songs_artist    ON songs(artist_id);
 CREATE INDEX IF NOT EXISTS idx_songs_album     ON songs(album_id);
 CREATE INDEX IF NOT EXISTS idx_songs_status    ON songs(lyrics_status);
 CREATE INDEX IF NOT EXISTS idx_songs_normalized ON songs(normalized_title);
-CREATE INDEX IF NOT EXISTS idx_lyrics_song     ON lyrics(song_id);
+-- A unique lyrics(song_id) index is enforced in db/repair.js after deduping any
+-- pre-existing rows in older local databases.
+CREATE INDEX IF NOT EXISTS idx_playlists_spotify ON playlists(spotify_id);
+CREATE INDEX IF NOT EXISTS idx_playlist_songs_playlist ON playlist_songs(playlist_id);

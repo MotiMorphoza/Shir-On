@@ -69,6 +69,10 @@ npm run dev
 - `npm run build`
   - builds the frontend production bundle
 
+Operational note:
+- the Reports page includes a `Reset Reports` action that clears active and legacy report JSON files without touching the SQLite library data
+- backend startup also runs lightweight repair passes for normalized fields and older duplicate `lyrics` rows in the local SQLite database
+
 ## Runtime URLs
 
 - Backend API: `http://127.0.0.1:3001`
@@ -101,10 +105,16 @@ After startup, verify:
 - the library page loads songs or an empty state
 - `/api/reports` returns JSON
 - Spotify session check responds on `/api/spotify/session`
+- the Songbook page can switch between `All songs` and an imported playlist
+- the `Fetch Lyrics` page can reconnect to a running or recent lyrics job after navigation
+- the `Import` page can reconnect to a running or recent Spotify import job after navigation
+- the Song and Collections pages render with the updated card-based layout
+- starting the same background fetch or Spotify import twice reconnects to the existing job instead of spawning a duplicate
 
 ## Common blockers
 
 1. `better-sqlite3` build failures on unsupported Node/Windows setups
 2. missing or incorrect Spotify env vars
 3. mismatch between `FRONTEND_URL` and the actual Vite dev URL
-4. external lyrics providers returning misses or HTTP errors
+4. Spotify local OAuth and `FRONTEND_URL` must match the actual loopback host you use consistently
+5. external lyrics providers returning misses or HTTP errors

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   getCollections, getCollection, createCollection,
-  addSongToCollection, removeSongFromCollection,
+  addSongToCollection, removeSongFromCollection, deleteCollection,
 } from '../services/collectionsService.js';
 
 const router = Router();
@@ -26,6 +26,11 @@ router.post('/:id/songs', (req, res) => {
 
 router.delete('/:id/songs/:songId', (req, res) => {
   removeSongFromCollection(req.params.id, req.params.songId);
+  res.status(204).end();
+});
+
+router.delete('/:id', (req, res) => {
+  deleteCollection(req.params.id);
   res.status(204).end();
 });
 

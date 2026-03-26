@@ -129,13 +129,15 @@ function createEmptyReport() {
   return {
     found: 0,
     imported: 0,
+    linked_existing: 0,
+    blocked: 0,
     skipped: 0,
     invalid: 0,
     errors: 0,
     summary: {
       imported: 0,
-      skipped_existing_spotify_id: 0,
-      skipped_existing_title_artist: 0,
+      linked_existing_spotify_id: 0,
+      linked_existing_title_artist: 0,
       invalid_track_payload: 0,
       failed_insert: 0,
       other: 0,
@@ -145,8 +147,9 @@ function createEmptyReport() {
   };
 }
 
-function pushRow(report, row) {
-  report.rows.push({
+function pushRow(report, row, onRow) {
+  const pushed = {
+    song_id: row.song_id || null,
     title: row.title || '',
     artist: row.artist || '',
     album: row.album || '',
@@ -166,16 +169,30 @@ function pushRow(report, row) {
     matched_artist: row.matched_artist || '',
     matched_album: row.matched_album || '',
     matched_spotify_id: row.matched_spotify_id || null,
-  });
+  };
+
+  report.rows.push(pushed);
+
+  if (typeof onRow === 'function') {
+    onRow(pushed, report);
+  }
 }
 
 function finalizeReport(report) {
+  const linkedExisting =
+    report.summary.linked_existing_spotify_id +
+    report.summary.linked_existing_title_artist;
+  const skipped = report.summary.other;
+  const blocked =
+    report.summary.invalid_track_payload +
+    report.summary.failed_insert +
+    skipped;
+
   return {
     ...report,
-    skipped:
-      report.summary.skipped_existing_spotify_id +
-      report.summary.skipped_existing_title_artist +
-      report.summary.other,
+    linked_existing: linkedExisting,
+    blocked,
+    skipped,
   };
 }
 
@@ -199,7 +216,7 @@ function buildMatchFields(existing) {
   };
 }
 
-export function importSpotifyTracks(tracks) {
+export function importSpotifyTracks(tracks, { onRow } = {}) {
   const safeTracks = Array.isArray(tracks) ? tracks : [];
   const report = createEmptyReport();
   report.found = safeTracks.length;
@@ -231,48 +248,49 @@ export function importSpotifyTracks(tracks) {
             normalized_artist,
             action: 'invalid',
             reason: 'invalid_track_payload',
-          });
+          }, onRow);
 
           continue;
         }
 
         const existingBySpotifyId = findExistingBySpotifyId(track.spotify_id);
         if (existingBySpotifyId) {
-          report.summary.skipped_existing_spotify_id += 1;
+          report.summary.linked_existing_spotify_id += 1;
 
           pushRow(report, {
             ...track,
             ...buildMatchFields(existingBySpotifyId),
-            action: 'skipped',
+            action: 'linked_existing',
             reason: 'existing_spotify_id',
-          });
+          }, onRow);
 
           continue;
         }
 
         const existingByTitleArtist = findExistingByTitleArtist(track);
         if (existingByTitleArtist) {
-          report.summary.skipped_existing_title_artist += 1;
+          report.summary.linked_existing_title_artist += 1;
 
           pushRow(report, {
             ...track,
             ...buildMatchFields(existingByTitleArtist),
-            action: 'skipped',
+            action: 'linked_existing',
             reason: 'existing_title_artist',
-          });
+          }, onRow);
 
           continue;
         }
 
-        createSong(track);
+        const createdSong = createSong(track);
         report.imported += 1;
         report.summary.imported += 1;
 
         pushRow(report, {
           ...track,
+          song_id: createdSong?.id || null,
           action: 'imported',
           reason: 'created',
-        });
+        }, onRow);
       } catch (err) {
         report.errors += 1;
         report.summary.failed_insert += 1;
@@ -303,7 +321,7 @@ export function importSpotifyTracks(tracks) {
           action: 'error',
           reason: 'failed_insert',
           error: message,
-        });
+        }, onRow);
       }
     }
   });
@@ -313,7 +331,7 @@ export function importSpotifyTracks(tracks) {
   return finalizeReport(report);
 }
 
-export function importFromJSON(records) {
+export function importFromJSON(records, { onRow } = {}) {
   const safeRecords = Array.isArray(records) ? records : [];
   const report = createEmptyReport();
   report.found = safeRecords.length;
@@ -345,48 +363,49 @@ export function importFromJSON(records) {
             normalized_artist,
             action: 'invalid',
             reason: 'invalid_track_payload',
-          });
+          }, onRow);
 
           continue;
         }
 
         const existingBySpotifyId = findExistingBySpotifyId(record.spotify_id);
         if (existingBySpotifyId) {
-          report.summary.skipped_existing_spotify_id += 1;
+          report.summary.linked_existing_spotify_id += 1;
 
           pushRow(report, {
             ...record,
             ...buildMatchFields(existingBySpotifyId),
-            action: 'skipped',
+            action: 'linked_existing',
             reason: 'existing_spotify_id',
-          });
+          }, onRow);
 
           continue;
         }
 
         const existingByTitleArtist = findExistingByTitleArtist(record);
         if (existingByTitleArtist) {
-          report.summary.skipped_existing_title_artist += 1;
+          report.summary.linked_existing_title_artist += 1;
 
           pushRow(report, {
             ...record,
             ...buildMatchFields(existingByTitleArtist),
-            action: 'skipped',
+            action: 'linked_existing',
             reason: 'existing_title_artist',
-          });
+          }, onRow);
 
           continue;
         }
 
-        createSong(record);
+        const createdSong = createSong(record);
         report.imported += 1;
         report.summary.imported += 1;
 
         pushRow(report, {
           ...record,
+          song_id: createdSong?.id || null,
           action: 'imported',
           reason: 'created',
-        });
+        }, onRow);
       } catch (err) {
         report.errors += 1;
         report.summary.failed_insert += 1;
@@ -417,7 +436,7 @@ export function importFromJSON(records) {
           action: 'error',
           reason: 'failed_insert',
           error: message,
-        });
+        }, onRow);
       }
     }
   });

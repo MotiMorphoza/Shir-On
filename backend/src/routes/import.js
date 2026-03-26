@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { importFromJSON } from '../services/importService.js';
-import { saveReport } from '../services/reportService.js';
+import { createImportBatchReport } from '../services/reportService.js';
 
 const router = Router();
 
@@ -39,6 +39,7 @@ function normalizeRecord(raw) {
   }
 
   return {
+    ...raw,
     title,
     artist,
     album,
@@ -111,22 +112,23 @@ function parseCsv(text) {
 }
 
 function persistImportReport(sourceType, sourceId, report) {
-  return saveReport({
-    type: 'import',
+  return createImportBatchReport({
     subtype: sourceType,
-    source_type: sourceType,
-    source_id: sourceId,
+    sourceId,
+    rows: report.rows,
+    found: report.found,
     summary: {
       found: Number(report.found || 0),
       imported: Number(report.imported || 0),
+      linked_existing: Number(report.linked_existing || 0),
+      passed: Number((report.imported || 0) + (report.linked_existing || 0)),
+      blocked: Number(report.blocked || 0),
       skipped: Number(report.skipped || 0),
       invalid: Number(report.invalid || 0),
       errors: Number(report.errors || 0),
       ...(report.summary || {}),
     },
-    rows: Array.isArray(report.rows) ? report.rows : [],
-    errors_list: Array.isArray(report.errors_list) ? report.errors_list : [],
-    report,
+    errorsList: report.errors_list,
   });
 }
 
@@ -153,6 +155,9 @@ router.post('/csv', upload.single('file'), (req, res) => {
       source_type: 'csv',
       source_id: req.file.originalname || 'uploaded.csv',
       imported: report.imported,
+      linked_existing: report.linked_existing,
+      passed: report.imported + report.linked_existing,
+      blocked: report.blocked,
       skipped: report.skipped,
       invalid: report.invalid,
       errors: report.errors,
@@ -195,6 +200,9 @@ router.post('/json', (req, res) => {
       source_type: 'json',
       source_id: 'request-body',
       imported: report.imported,
+      linked_existing: report.linked_existing,
+      passed: report.imported + report.linked_existing,
+      blocked: report.blocked,
       skipped: report.skipped,
       invalid: report.invalid,
       errors: report.errors,
