@@ -21,13 +21,28 @@ const { default: playlistsRouter } = await import('./routes/playlists.js');
 const { default: reportsRouter } = await import('./routes/reports.js');
 const { default: jobsRouter } = await import('./routes/jobs.js');
 const { default: db } = await import('./db/index.js');
-const { repairLyricsUniqueness, repairNormalizedFields } = await import('./db/repair.js');
+const {
+  repairHtmlEntities,
+  repairLyricsUniqueness,
+  repairNormalizedFields,
+} = await import('./db/repair.js');
 
 const schema = readFileSync(join(__dirname, 'db/schema.sql'), 'utf8');
 db.exec(schema);
 
+const htmlEntityRepair = repairHtmlEntities();
 const repaired = repairNormalizedFields();
 const lyricsRepair = repairLyricsUniqueness();
+
+if (
+  htmlEntityRepair.artists ||
+  htmlEntityRepair.albums ||
+  htmlEntityRepair.songs ||
+  htmlEntityRepair.lyrics ||
+  htmlEntityRepair.tags
+) {
+  console.log('HTML-entity repair applied:', htmlEntityRepair);
+}
 
 if (repaired.artists || repaired.albums || repaired.songs) {
   console.log('Normalized-field repair applied:', repaired);

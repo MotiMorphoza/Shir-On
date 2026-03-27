@@ -211,22 +211,29 @@ function buildStyles(metrics) {
     .toc-page-body {
       display: grid;
       grid-template-rows: auto 1fr;
-      gap: 1.1mm;
+      gap: 1.25mm;
+    }
+
+    .toc-page-body.first {
+      gap: 3.2mm;
     }
 
     .toc-page-body.continued {
-      gap: 0.7mm;
+      gap: 1.1mm;
     }
 
     .toc-page h1 {
       margin: 0;
       text-align: center;
-      font-size: 1.3em;
-      line-height: 1.05;
+      font-size: 1.42em;
+      line-height: 1.08;
+      letter-spacing: 0.03em;
+      font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      font-weight: 700;
     }
 
     .toc-spacer {
-      height: 2mm;
+      height: 3.2mm;
     }
 
     .toc-columns {
@@ -243,25 +250,38 @@ function buildStyles(metrics) {
       font-size: 0.86em;
       line-height: 1.02;
       font-weight: 700;
-      display: flex;
+      display: block;
       width: 100%;
     }
 
     .toc-heading.rtl {
       direction: rtl;
       text-align: right;
-      justify-content: flex-end;
+      unicode-bidi: plaintext;
     }
 
     .toc-heading.ltr {
       direction: ltr;
       text-align: left;
-      justify-content: flex-start;
+      unicode-bidi: plaintext;
     }
 
     .toc-heading-text {
-      display: inline-block;
+      display: block;
+      width: 100%;
       max-width: 100%;
+    }
+
+    .toc-heading.rtl .toc-heading-text {
+      direction: rtl;
+      text-align: right;
+      unicode-bidi: plaintext;
+    }
+
+    .toc-heading.ltr .toc-heading-text {
+      direction: ltr;
+      text-align: left;
+      unicode-bidi: plaintext;
     }
 
     .toc-row {
@@ -703,7 +723,7 @@ function groupedTocHtml(tocPages) {
       (columns, pageIndex) => `
         <section class="book-page toc-page" ${pageIndex === 0 ? 'id="songbook-toc"' : ''}>
           <div class="page-body toc-page-body ${pageIndex === 0 ? 'first' : 'continued'}">
-            ${pageIndex === 0 ? '<h1>Table of Contents</h1>' : '<div class="toc-spacer"></div>'}
+            ${pageIndex === 0 ? '<h1>Shir On - Table of Contents</h1>' : '<div class="toc-spacer"></div>'}
             <div class="toc-columns">
               <div class="toc-column toc-column-right">
                 ${columns.right.map((row) => tocRowHtml(row)).join('')}

@@ -39,7 +39,6 @@ export default function SongPage() {
   const [loading, setLoading] = useState(!isNew);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
-  const [lastReportId, setLastReportId] = useState('');
 
   const isHebrew = useMemo(
     () => isProbablyHebrew(form.title) || isProbablyHebrew(lyrics),
@@ -149,34 +148,6 @@ export default function SongPage() {
       setMsg('Song saved.');
     } catch (e) {
       setError(e?.message || 'Save failed');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function fetchLyrics() {
-    setSaving(true);
-    setMsg('Fetching lyrics...');
-    setError('');
-    setLastReportId('');
-
-    try {
-      const result = await api.fetchLyrics(id);
-
-      if (result?.fetched) {
-        setLyrics(result.song?.lyrics?.text || '');
-        setSong(result.song || null);
-        setMsg('Lyrics fetched.');
-      } else {
-        setMsg('No lyrics found by any provider.');
-      }
-
-      if (result?.report_id) {
-        setLastReportId(result.report_id);
-      }
-    } catch (e) {
-      setError(e?.message || 'Lyrics fetch failed');
-      setMsg('');
     } finally {
       setSaving(false);
     }
@@ -337,9 +308,6 @@ export default function SongPage() {
 
             {!isNew && (
               <>
-                <button type="button" style={styles.secondaryBtn} onClick={fetchLyrics} disabled={saving || deleting}>
-                  Fetch Lyrics Now
-                </button>
                 <button
                   type="button"
                   style={styles.secondaryBtn}
@@ -357,16 +325,6 @@ export default function SongPage() {
                   >
                     Open in Spotify
                   </a>
-                )}
-                {lastReportId && (
-                  <button
-                    type="button"
-                    style={styles.secondaryBtn}
-                    onClick={() => navigate(`/reports/${lastReportId}`)}
-                    disabled={deleting}
-                  >
-                    View Fetch Report
-                  </button>
                 )}
                 <button
                   type="button"

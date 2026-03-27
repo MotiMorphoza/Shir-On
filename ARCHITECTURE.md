@@ -147,6 +147,7 @@ Verified behavior:
 - otherwise retain the best lower-confidence result
 - save one batch fetch report per run instead of one physical JSON file per song
 - startup repair now dedupes older `lyrics` rows by `song_id`, drops the legacy non-unique index, and recreates a unique `lyrics(song_id)` index so song queries can join lyrics directly
+- startup repair now also decodes stored HTML entities such as `&#039;` in artist names, album titles, song titles, lyrics, and tags before normalized fields are recalculated
 
 ## Spotify architecture
 

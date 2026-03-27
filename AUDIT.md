@@ -328,6 +328,7 @@ What changed:
 - the working print format is now fixed in docs and code as a two-column book spread, with Hebrew songs starting from the right column, non-Hebrew songs from the left, and Hebrew metadata blocks staying right-aligned even when artist names are written in English
 - print page margins, footer space, and in-song line spacing were tightened slightly again after the first working layout to reduce unused top/bottom space and fit more lyric lines per page
 - printed TOC artist headings now apply explicit RTL/LTR alignment and edge anchoring as headings, so Hebrew artist names stay right-aligned in the contents pages while English names remain left-aligned
+- printed TOC headings now use a block-level edge anchor instead of flex-based alignment, and the TOC title now renders as `Shir On - Table of Contents` with more space before the contents begin
 - the print preparation screen now shows one concise loading message instead of two near-duplicate status lines
 - the print error screen now also keeps only the core error message instead of adding an extra explanatory footer line
 - digital songbook TOC jumps now respect the sticky header height, so song titles and `Open` links stay visible after navigation
@@ -424,6 +425,7 @@ Status: `Fixed`
 What changed:
 - removed the summary row under the song title that repeated lyrics presence, link state, Spotify source, and tags
 - the header now stays focused on title plus the artist / album / year subtitle
+- the Song page no longer offers a separate inline `Fetch Lyrics` button, so lyrics fetching now stays in the dedicated fetch workflow instead of splitting between the song editor and the fetch screen
 
 Why it mattered:
 - the extra row made the song page feel busier without helping the main editing flow
@@ -444,6 +446,22 @@ Why it mattered:
 
 Code:
 - [frontend/src/pages/SongPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/SongPage.jsx)
+
+### 26. Stored HTML entities leaked into visible song text
+
+Status: `Fixed`
+
+What changed:
+- startup repair now decodes stored HTML entities such as `&#039;` back into plain text across artists, albums, songs, lyrics, and tags
+- the sanitize layer now decodes those entities before saving future text, so the apostrophe form does not come back on new imports or edits
+
+Why it mattered:
+- visible song text could show raw entity strings like `&#039;` instead of real punctuation, especially in Hebrew song titles and lyrics
+
+Code:
+- [backend/src/utils/sanitize.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/utils/sanitize.js)
+- [backend/src/db/repair.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/db/repair.js)
+- [backend/src/index.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/index.js)
 
 ### 22. Import flow front-loaded too much Spotify connection chrome
 

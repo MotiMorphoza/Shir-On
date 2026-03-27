@@ -11,6 +11,7 @@ The app lets you:
 - reconnect to active lyrics and Spotify import jobs after page navigation
 - review unified batch reports with drill-down diagnostics
 - keep one lyrics row per song through startup repair + unique-index enforcement on local databases
+- decode legacy HTML entities such as `&#039;` back into plain apostrophes during startup repair and future saves
 - reset stored reports from the Reports screen when you want a clean history
 - read the library as a digital songbook with TOC links and playlist selection
 - generate printable PDF songbooks with artist-sorted output, optional single-song pages, and supported two-column lyrics layouts
@@ -119,6 +120,7 @@ Useful commands:
 - the Song page year field now supports both typing and picking from a year list
 - the Song page header now stays compact and no longer repeats a status/tag summary row under the title
 - the Song page actions now include a direct `Delete Song` button in place of the older generic reports shortcut
+- the Song page no longer includes an inline `Fetch Lyrics` action; lyrics fetching now stays in the dedicated `Fetch Lyrics` flow instead of splitting that behavior across two screens
 - printing now opens a styled preview tab immediately and then loads the finished PDF into it once the backend response is ready
 - the Reports screen includes a destructive `Reset Reports` action that clears both active and legacy JSON report files
 - the song editor and collections pages now use the same card, spacing, and action hierarchy patterns as the main library UI
@@ -145,11 +147,13 @@ Useful commands:
 - the working print format is now kept as a fixed two-column book layout: Hebrew songs start on the right, non-Hebrew songs start on the left, and Hebrew song metadata stays right-aligned even when artist names are written in English
 - print margins, footer space, and in-song line spacing are now slightly tighter to fit more lyrics on each page without changing the fixed two-column book structure
 - TOC artist headings now apply explicit RTL/LTR alignment plus edge anchoring too, so Hebrew artist names stay right-aligned in the printed contents pages while English names stay left-aligned
+- the printed TOC title now renders as `Shir On - Table of Contents` in a more book-like serif heading with extra breathing room before the artist/title rows begin
 - long printed songs now re-measure their start and continuation columns before final render, so a last line near the footer is pushed into the next column instead of being clipped
 - the Library screen now remembers the last chosen playlist and filter state when you leave the page and return
 - the Songbook screen now remembers the last chosen playlist scope when you leave the page and return
 - the print preparation screen now shows one concise loading message instead of repeating the same status twice
 - the print error screen now stays concise too, without the extra explanatory footer sentence
+- startup repair now also cleans stored HTML entities like `&#039;` out of artist names, song titles, lyrics, and tags, and new saves decode those entities before storage
 - digital songbook TOC jumps now leave the song title visible instead of hiding it under the sticky app chrome
 - printed song pages now include a fixed `Back to Contents` link to the start of the PDF table of contents
 - digital songbook TOC artist headings now align by language too, so Hebrew artist names stay right-aligned in the left-hand contents rail
