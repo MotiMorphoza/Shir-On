@@ -221,6 +221,7 @@ Verified capabilities:
 - the printed TOC now emphasizes the printed scope name more strongly, and song pages place a centered `Back to Contents` link directly under the page number
 - printed TOC artist headings now derive Hebrew/LTR alignment from the songs grouped under that artist, not only from the stored artist name string
 - the current TOC heading renderer now uses a simple block + `text-align` pattern instead of a grid/max-content wrapper because Chromium PDF proved unreliable with the older structure
+- every printed songbook page now includes a centered running header that reflects the active printed scope as `Shir On - [playlist/collection/all songs]`
 - long printed songs now render through explicit right/left page columns in the final HTML markup, with their token split decided before the final PDF render
 - print-column language selection now follows song title/lyrics content instead of artist or album metadata, so non-Hebrew songs keep their left-column start rule
 - Hebrew song headers now keep one right-aligned metadata block even when artist names or album metadata use Latin characters

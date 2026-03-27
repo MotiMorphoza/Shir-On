@@ -6,7 +6,13 @@ const STATUS_OPTIONS = [
   { value: 'missing', label: 'No Lyrics' },
 ];
 
-export default function FilterBar({ filters, onChange }) {
+export default function FilterBar({
+  filters,
+  onChange,
+  playlistId = '',
+  playlists = [],
+  onPlaylistChange,
+}) {
   const set = (key, value) => {
     onChange({
       ...filters,
@@ -18,7 +24,6 @@ export default function FilterBar({ filters, onChange }) {
     onChange({
       search: '',
       status: '',
-      artist: '',
       year: '',
       sort: 'artist',
     });
@@ -27,12 +32,18 @@ export default function FilterBar({ filters, onChange }) {
   return (
     <div style={styles.wrap}>
       <div style={styles.bar}>
-        <input
-          style={{ ...styles.input, ...styles.search }}
-          placeholder="Search title or artist..."
-          value={filters.search || ''}
-          onChange={(e) => set('search', e.target.value)}
-        />
+        <select
+          value={playlistId}
+          onChange={(e) => onPlaylistChange?.(e.target.value)}
+          style={{ ...styles.select, ...styles.playlistSelect }}
+        >
+          <option value="">Playlist: All songs</option>
+          {playlists.map((playlist) => (
+            <option key={playlist.id} value={playlist.id}>
+              {playlist.name} ({playlist.songs_count || 0})
+            </option>
+          ))}
+        </select>
 
         <select
           value={filters.status || ''}
@@ -47,10 +58,10 @@ export default function FilterBar({ filters, onChange }) {
         </select>
 
         <input
-          style={styles.input}
-          placeholder="Artist"
-          value={filters.artist || ''}
-          onChange={(e) => set('artist', e.target.value)}
+          style={{ ...styles.input, ...styles.search }}
+          placeholder="Search title or artist..."
+          value={filters.search || ''}
+          onChange={(e) => set('search', e.target.value)}
         />
 
         <input
@@ -99,7 +110,7 @@ const styles = {
     alignItems: 'center',
   },
   search: {
-    flex: '2 1 260px',
+    flex: '2 1 280px',
   },
   input: {
     flex: '1 1 120px',
@@ -115,6 +126,9 @@ const styles = {
     borderRadius: 4,
     background: '#fff',
     fontFamily: 'inherit',
+  },
+  playlistSelect: {
+    minWidth: 230,
   },
   clearBtn: {
     padding: '6px 12px',

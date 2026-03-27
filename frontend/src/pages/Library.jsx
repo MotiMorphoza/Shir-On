@@ -7,13 +7,22 @@ import SpotifyImportCard from '../components/SpotifyImportCard.jsx';
 
 const FETCH_LIMIT = 1000;
 const LIBRARY_VIEW_KEY = 'shir_on_library_view';
+const PENDING_COLLECTION_ADD_KEY = 'shir_on_pending_collection_add';
 const DEFAULT_FILTERS = {
   search: '',
   status: '',
-  artist: '',
   year: '',
   sort: 'artist',
 };
+
+function normalizeLibraryFilters(raw = {}) {
+  return {
+    search: typeof raw?.search === 'string' ? raw.search : '',
+    status: typeof raw?.status === 'string' ? raw.status : '',
+    year: typeof raw?.year === 'string' ? raw.year : '',
+    sort: typeof raw?.sort === 'string' ? raw.sort : 'artist',
+  };
+}
 
 function isHebrewText(value = '') {
   return /[\u0590-\u05FF]/.test(String(value || ''));
@@ -32,10 +41,7 @@ function readLibraryView() {
     const parsed = raw ? JSON.parse(raw) : {};
 
     return {
-      filters: {
-        ...DEFAULT_FILTERS,
-        ...(parsed?.filters || {}),
-      },
+      filters: normalizeLibraryFilters(parsed?.filters || {}),
       playlistId: typeof parsed?.playlistId === 'string' ? parsed.playlistId : '',
     };
   } catch {
@@ -175,6 +181,27 @@ export default function Library() {
     }
   }
 
+  function addSelectedToCollection() {
+    if (!selected.size || bulkBusy) {
+      return;
+    }
+
+    try {
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(
+          PENDING_COLLECTION_ADD_KEY,
+          JSON.stringify({
+            songIds: [...selected],
+          })
+        );
+      }
+    } catch {
+      // Ignore sessionStorage failures and still navigate.
+    }
+
+    navigate('/collections?pending_add=1');
+  }
+
   async function printSelected() {
     setError('');
     setInfo('');
@@ -237,71 +264,51 @@ export default function Library() {
             </p>
           </div>
 
+          <div style={styles.spotifyImportShell}>
+            <div style={styles.spotifyImportCard}>
+              <SpotifyImportCard
+                flat
+                value={spotifyImportInput}
+                onChange={setSpotifyImportInput}
+                onSubmit={openSpotifyImport}
+                subtitle=""
+                hideFooterButton
+                disabled={!spotifyImportInput.trim()}
+                headerAction={(
+                  <button
+                    type="button"
+                    style={styles.spotifyImportBtn}
+                    onClick={openSpotifyImport}
+                    disabled={!spotifyImportInput.trim()}
+                  >
+                    IMPORT
+                  </button>
+                )}
+              />
+            </div>
+          </div>
+
           <div style={styles.headerActions}>
-            <button type="button" style={styles.secondaryBtn} onClick={openLyricsRun}>
+            <button type="button" style={{ ...styles.secondaryBtn, ...styles.headerActionBtn }} onClick={openLyricsRun}>
               FETCH LYRICS
             </button>
-            <button type="button" style={styles.primaryBtn} onClick={printSelected}>
+            <button type="button" style={{ ...styles.primaryBtn, ...styles.headerActionBtn }} onClick={printSelected}>
               PRINT
             </button>
           </div>
         </header>
-
-        <div style={styles.spotifyImportRow}>
-          <div style={styles.spotifyImportCard}>
-            <SpotifyImportCard
-              flat
-              value={spotifyImportInput}
-              onChange={setSpotifyImportInput}
-              onSubmit={openSpotifyImport}
-              subtitle=""
-              hideFooterButton
-              disabled={!spotifyImportInput.trim()}
-              headerAction={(
-                <button
-                  type="button"
-                  style={styles.spotifyImportBtn}
-                  onClick={openSpotifyImport}
-                  disabled={!spotifyImportInput.trim()}
-                >
-                  IMPORT
-                </button>
-              )}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div style={styles.scopeBar}>
-        <label style={styles.scopeLabel}>
-          Playlist
-          <select
-            value={playlistId}
-            onChange={(e) => {
-              setPlaylistId(e.target.value);
-              setSelected(new Set());
-            }}
-            style={styles.scopeSelect}
-          >
-            <option value="">All songs</option>
-            {playlists.map((playlist) => (
-              <option key={playlist.id} value={playlist.id}>
-                {playlist.name} ({playlist.songs_count || 0})
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div style={styles.scopeStats}>
-          <span style={styles.scopeChip}>{summary.total} visible</span>
-          <span style={styles.scopeChip}>{summary.artistCount} artists</span>
-          <span style={styles.scopeChip}>{summary.withLyrics} with lyrics</span>
-          <span style={styles.scopeChip}>{summary.missingLyrics} missing</span>
-        </div>
       </div>
 
       <FilterBar
         filters={filters}
+        playlistId={playlistId}
+        playlists={playlists}
+        onPlaylistChange={(nextPlaylistId) => {
+          setPlaylistId(nextPlaylistId);
+          setSelected(new Set());
+          setInfo('');
+          setError('');
+        }}
         onChange={(nextFilters) => {
           setFilters({
             ...DEFAULT_FILTERS,
@@ -314,11 +321,29 @@ export default function Library() {
       />
 
       <div style={styles.actionBar}>
-        <strong>{selected.size} selected</strong>
+        <div style={styles.actionBarLeft}>
+          <strong>{selected.size} selected</strong>
 
-        <button type="button" style={styles.bulkBtn} onClick={deleteSelected} disabled={bulkBusy || !selected.size}>
-          Delete Selected
-        </button>
+          <button
+            type="button"
+            style={styles.bulkBtn}
+            onClick={addSelectedToCollection}
+            disabled={bulkBusy || !selected.size}
+          >
+            Add to Collection
+          </button>
+
+          <button type="button" style={styles.bulkBtn} onClick={deleteSelected} disabled={bulkBusy || !selected.size}>
+            Delete Selected
+          </button>
+        </div>
+
+        <div style={styles.actionBarStats}>
+          <span style={styles.scopeChip}>{summary.total} visible</span>
+          <span style={styles.scopeChip}>{summary.artistCount} artists</span>
+          <span style={styles.scopeChip}>{summary.withLyrics} with lyrics</span>
+          <span style={styles.scopeChip}>{summary.missingLyrics} missing</span>
+        </div>
       </div>
 
       {error && <p style={styles.error}>{error}</p>}
@@ -355,21 +380,26 @@ const styles = {
     marginBottom: 16,
   },
   header: {
-    display: 'flex',
-    justifyContent: 'space-between',
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) minmax(320px, 460px) minmax(0, 1fr)',
     alignItems: 'flex-start',
-    gap: 16,
-    marginBottom: 18,
-    flexWrap: 'wrap',
+    gap: 24,
+    width: '100%',
   },
   headerCopy: {
-    maxWidth: 760,
+    minWidth: 0,
     textAlign: 'left',
+    gridColumn: 1,
   },
   headerActions: {
-    display: 'grid',
-    gap: 10,
-    justifyItems: 'end',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 12,
+    gridColumn: 3,
+    justifySelf: 'end',
+    width: 210,
   },
   title: {
     margin: '0 0 8px',
@@ -399,24 +429,18 @@ const styles = {
     fontWeight: 700,
     cursor: 'pointer',
   },
-  scopeBar: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 16,
-    flexWrap: 'wrap',
-    padding: '14px 16px',
-    borderRadius: 18,
-    background: '#fffefb',
-    border: '1px solid rgba(114, 98, 78, 0.18)',
-    marginBottom: 14,
+  headerActionBtn: {
+    width: '100%',
+    textAlign: 'center',
   },
-  spotifyImportRow: {
-    display: 'flex',
-    justifyContent: 'center',
+  spotifyImportShell: {
+    gridColumn: 2,
+    justifySelf: 'center',
+    alignSelf: 'flex-start',
+    width: '100%',
   },
   spotifyImportCard: {
-    width: 'min(460px, 100%)',
+    width: '100%',
   },
   spotifyImportBtn: {
     padding: '10px 16px',
@@ -427,24 +451,6 @@ const styles = {
     fontWeight: 700,
     cursor: 'pointer',
     letterSpacing: '0.04em',
-  },
-  scopeLabel: {
-    display: 'grid',
-    gap: 6,
-    color: '#53493d',
-    fontWeight: 700,
-  },
-  scopeSelect: {
-    minWidth: 240,
-    padding: '9px 12px',
-    borderRadius: 12,
-    border: '1px solid #d2c7b7',
-    background: '#fff',
-  },
-  scopeStats: {
-    display: 'flex',
-    gap: 10,
-    flexWrap: 'wrap',
   },
   scopeChip: {
     display: 'inline-flex',
@@ -460,6 +466,7 @@ const styles = {
     display: 'flex',
     gap: 8,
     alignItems: 'center',
+    justifyContent: 'space-between',
     padding: '12px 14px',
     background: '#f7f2e8',
     border: '1px solid rgba(114, 98, 78, 0.14)',
@@ -467,6 +474,19 @@ const styles = {
     marginBottom: 12,
     flexWrap: 'wrap',
     color: '#4a3f31',
+  },
+  actionBarLeft: {
+    display: 'flex',
+    gap: 10,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  actionBarStats: {
+    display: 'flex',
+    gap: 10,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
   },
   bulkBtn: {
     padding: '8px 12px',

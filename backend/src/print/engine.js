@@ -134,8 +134,9 @@ function buildStyles(metrics) {
       --page-margin: ${metrics.margin};
       --content-width: calc(var(--page-width) - (2 * var(--page-margin)));
       --content-height: calc(var(--page-height) - (2 * var(--page-margin)));
+      --header-height: 5.4mm;
       --footer-height: 5.2mm;
-      --body-height: calc(var(--content-height) - var(--footer-height));
+      --body-height: calc(var(--content-height) - var(--header-height) - var(--footer-height));
       --column-gap: 5.5mm;
       --column-width: calc((var(--content-width) - var(--column-gap)) / 2);
       --card-padding-y: 2.2mm;
@@ -189,8 +190,29 @@ function buildStyles(metrics) {
     }
 
     .page-body {
+      position: absolute;
+      top: var(--header-height);
+      left: 0;
+      right: 0;
       height: var(--body-height);
       min-height: 0;
+    }
+
+    .page-header {
+      position: absolute;
+      top: 0.4mm;
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: 0.78em;
+      line-height: 1.1;
+      letter-spacing: 0.03em;
+      color: #6b5a49;
+      font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .two-column {
@@ -437,9 +459,9 @@ function buildStyles(metrics) {
       position: absolute;
       left: 0;
       right: 0;
-      bottom: 1.9mm;
+      bottom: 2.6mm;
       text-align: center;
-      font-size: 0.66em;
+      font-size: 0.74em;
       line-height: 1;
       color: #555;
       font-variant-numeric: tabular-nums;
@@ -449,7 +471,7 @@ function buildStyles(metrics) {
       position: absolute;
       left: 0;
       right: 0;
-      bottom: 0.25mm;
+      bottom: 0.2mm;
       text-align: center;
       font-size: 0.78em;
       line-height: 1;
@@ -695,6 +717,10 @@ function buildTocTitleHtml(metrics) {
   `;
 }
 
+function buildRunningHeaderHtml(metrics) {
+  return `<div class="page-header">${sanitizeText(`Shir On - ${metrics.bookTitle || 'All Songs'}`)}</div>`;
+}
+
 function buildTocRows(songs, pageNumbers) {
   const artistGroups = new Map();
 
@@ -749,6 +775,7 @@ function groupedTocHtml(tocPages) {
     .map(
       (columns, pageIndex) => `
         <section class="book-page toc-page" ${pageIndex === 0 ? 'id="songbook-toc"' : ''}>
+          ${buildRunningHeaderHtml(columns.metrics || {})}
           <div class="page-body toc-page-body ${pageIndex === 0 ? 'first' : 'continued'}">
             ${pageIndex === 0 ? buildTocTitleHtml(columns.metrics || {}) : '<div class="toc-spacer"></div>'}
             <div class="toc-columns">
@@ -767,7 +794,7 @@ function groupedTocHtml(tocPages) {
     .join('');
 }
 
-function bookPagesHtml(songPages, tocPagesCount) {
+function bookPagesHtml(songPages, tocPagesCount, metrics) {
   return songPages
     .map((page, index) => {
       const pageNumber = tocPagesCount + index + 1;
@@ -779,6 +806,7 @@ function bookPagesHtml(songPages, tocPagesCount) {
       if (page.layout === 'single') {
         return `
           <section class="book-page song-book-page">
+            ${buildRunningHeaderHtml(metrics)}
             ${songFlowPageHtml(page.song)}
             ${backToTocLink}
             <footer class="page-number">${pageNumber}</footer>
@@ -788,6 +816,7 @@ function bookPagesHtml(songPages, tocPagesCount) {
 
       return `
         <section class="book-page song-book-page">
+          ${buildRunningHeaderHtml(metrics)}
           <div class="page-body page-spread">
             <div class="page-column page-column-right">
               ${page.columns.right ? songCardHtml(page.columns.right) : ''}
@@ -1157,10 +1186,10 @@ function buildHtml(songPages, tocPages, metrics) {
   <title>Songbook PDF</title>
   <style>${buildStyles(metrics)}</style>
 </head>
-<body>
+  <body>
   <div class="book">
     ${metrics.includeToc ? groupedTocHtml(tocPages) : ''}
-    ${bookPagesHtml(songPages, tocPages.length)}
+    ${bookPagesHtml(songPages, tocPages.length, metrics)}
   </div>
 </body>
 </html>`;

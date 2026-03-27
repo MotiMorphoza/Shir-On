@@ -2,8 +2,36 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 
+const PENDING_COLLECTION_ADD_KEY = 'shir_on_pending_collection_add';
+
 function isHebrewText(value = '') {
   return /[\u0590-\u05FF]/.test(String(value || ''));
+}
+
+function readPendingCollectionAdd() {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(PENDING_COLLECTION_ADD_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed?.songIds) ? parsed.songIds.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function clearPendingCollectionAdd() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.removeItem(PENDING_COLLECTION_ADD_KEY);
+  } catch {
+    // Ignore sessionStorage failures in restricted contexts.
+  }
 }
 
 export default function CollectionsPage() {
@@ -19,6 +47,7 @@ export default function CollectionsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+  const [pendingSongIds, setPendingSongIds] = useState([]);
 
   async function loadCollections(preferredId = '') {
     setLoading(true);
@@ -73,6 +102,24 @@ export default function CollectionsPage() {
     loadCollectionDetail(selectedId);
   }, [selectedId]);
 
+  useEffect(() => {
+    setPendingSongIds(readPendingCollectionAdd());
+  }, []);
+
+  async function addPendingSongsToCollection(collectionId) {
+    if (!collectionId || !pendingSongIds.length) {
+      return 0;
+    }
+
+    for (const songId of pendingSongIds) {
+      await api.addToCollection(collectionId, songId);
+    }
+
+    clearPendingCollectionAdd();
+    setPendingSongIds([]);
+    return pendingSongIds.length;
+  }
+
   async function createCollection(event) {
     event.preventDefault();
 
@@ -87,9 +134,14 @@ export default function CollectionsPage() {
 
     try {
       const created = await api.createCollection(cleanName, description.trim());
+      const addedCount = await addPendingSongsToCollection(created?.id || '');
       setName('');
       setDescription('');
-      setInfo('Collection created.');
+      setInfo(
+        addedCount
+          ? `Collection created and ${addedCount} pending song(s) were added.`
+          : 'Collection created.'
+      );
       await loadCollections(created?.id || '');
     } catch (e) {
       setError(e?.message || 'Failed to create collection');
@@ -166,6 +218,27 @@ export default function CollectionsPage() {
     }
   }
 
+  async function addPendingToSelectedCollection() {
+    if (!selectedId || !pendingSongIds.length || busy) {
+      return;
+    }
+
+    setBusy(true);
+    setError('');
+    setInfo('');
+
+    try {
+      const addedCount = await addPendingSongsToCollection(selectedId);
+      const collectionName = selectedCollection?.name || 'the collection';
+      setInfo(`Added ${addedCount} song(s) to "${collectionName}".`);
+      await Promise.all([loadCollections(selectedId), loadCollectionDetail(selectedId)]);
+    } catch (e) {
+      setError(e?.message || 'Failed to add songs to collection');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div style={styles.page}>
       <header style={styles.header}>
@@ -221,6 +294,40 @@ export default function CollectionsPage() {
 
       {error && <p style={styles.error}>{error}</p>}
       {info && <p style={styles.success}>{info}</p>}
+
+      {pendingSongIds.length > 0 && (
+        <div style={styles.pendingCard}>
+          <div>
+            <strong style={styles.pendingTitle}>Pending collection add</strong>
+            <p style={styles.pendingText}>
+              {pendingSongIds.length} selected song(s) were brought from the Library. Add them to the currently
+              selected collection or create a new collection to place them there.
+            </p>
+          </div>
+
+          <div style={styles.pendingActions}>
+            <button
+              type="button"
+              style={styles.primaryBtn}
+              onClick={addPendingToSelectedCollection}
+              disabled={!selectedId || busy}
+            >
+              Add to Selected Collection
+            </button>
+            <button
+              type="button"
+              style={styles.secondaryBtn}
+              onClick={() => {
+                clearPendingCollectionAdd();
+                setPendingSongIds([]);
+              }}
+              disabled={busy}
+            >
+              Clear Pending
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={styles.layout}>
         <aside style={styles.sidebar}>
@@ -380,6 +487,33 @@ const styles = {
     padding: 20,
     boxShadow: '0 14px 30px rgba(77, 60, 35, 0.05)',
     marginBottom: 18,
+  },
+  pendingCard: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 16,
+    flexWrap: 'wrap',
+    background: '#fffdf8',
+    border: '1px solid rgba(143, 111, 63, 0.22)',
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 18,
+  },
+  pendingTitle: {
+    display: 'block',
+    color: '#6a5128',
+    marginBottom: 6,
+  },
+  pendingText: {
+    margin: 0,
+    color: '#6b6053',
+    lineHeight: 1.6,
+  },
+  pendingActions: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
   },
   createFields: {
     display: 'grid',

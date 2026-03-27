@@ -164,6 +164,12 @@ What changed:
 - the top navigation now places `Songbook` first and gives it a stronger visual accent than the other nav links
 - the import screen now uses the shorter `Import` title plus one Spotify input that auto-detects playlist, album, or song imports, including Spotify single-song import
 - the same Spotify import shortcut now sits inside the Library header block itself, centered under the title/action row rather than as a separate card below it; its `IMPORT` button lives in the Spotify row header, the subtitle line is removed there, and the actual Spotify job still runs and reconnects only in the Import screen instead of duplicating job UI in Library
+- the Library header now presents its main actions as a vertical `FETCH LYRICS` then `PRINT` stack on the right, while the compact Spotify import row stays shorter and centered within the same header block
+- the Library playlist selector now sits inside the filter row directly after the lyrics-status filter, and the visible/artist/lyrics summary chips now live on the `selected` action bar instead of a separate playlist strip
+- the Library header now top-aligns its title block, centered Spotify import row, and right-side action stack together, and `PRINT` is centered directly beneath `FETCH LYRICS`
+- the Library header now uses a true three-zone grid so the centered Spotify import area no longer drifts toward the right-side action stack
+- the Library filter row now starts with `Playlist`, then lyrics status, then one combined title-or-artist search field; the separate Artist input was removed because it duplicated the search behavior
+- the Library `selected` bar now exposes `Add to Collection` before `Delete Selected`, but the actual choice between adding to an existing collection or creating a new one is handled on the Collections screen instead of through an inline chooser inside Library
 
 Code:
 - [frontend/src/main.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/main.jsx)
@@ -350,6 +356,8 @@ What changed:
 - printed TOC artist headings now use a plain block + `text-align` structure instead of the older grid/max-content wrapper, because Chromium PDF was not reliably honoring that wrapper for Hebrew alignment
 - printed TOC heading is now a centered two-line title that includes the printed list name, and TOC filling now starts from the left for non-Hebrew books or from the right for Hebrew books
 - printed song pages now center `Back to Contents` directly beneath the page number, using a larger accent link instead of a small side footer link
+- printed page numbers were also nudged larger and slightly higher so there is clearer breathing room between the page number and the `Back to Contents` link below it
+- printed songbook pages now also carry a centered running header in the form `Shir On - [playlist/collection/all songs]`, so the printed scope stays visible throughout the book and not only on the TOC title page
 - the printed TOC title now gives the printed list name a larger accent serif line and a little more breathing room before the first artist headings
 - the print preparation screen now shows one concise loading message instead of two near-duplicate status lines
 - the print error screen now also keeps only the core error message instead of adding an extra explanatory footer line
