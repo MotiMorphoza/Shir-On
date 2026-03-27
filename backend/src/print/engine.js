@@ -96,6 +96,19 @@ function prepareSongs(inputSongs) {
   }));
 }
 
+function inferTocStartColumn(songs, config = {}) {
+  if (config.tocStartColumn === 'left' || config.tocStartColumn === 'right') {
+    return config.tocStartColumn;
+  }
+
+  if (isHebrewText(config.bookTitle || '')) {
+    return 'right';
+  }
+
+  const hebrewSongs = songs.filter((song) => song.isHebrew).length;
+  return hebrewSongs > songs.length / 2 ? 'right' : 'left';
+}
+
 function getPageMetrics(config = {}) {
   const format = PAGE_SIZE_PRESETS[config.format] ? config.format : 'A4';
 
@@ -107,6 +120,9 @@ function getPageMetrics(config = {}) {
     lineHeight: LINE_HEIGHT_PRESETS[config.lineSpacing] || LINE_HEIGHT_PRESETS.normal,
     includeToc: config.includeToc !== false,
     songsPerPage: Number(config.songsPerPage) === 1 ? 1 : 2,
+    appTitle: String(config.appTitle || 'Shir - On'),
+    bookTitle: String(config.bookTitle || 'All Songs'),
+    tocStartColumn: config.tocStartColumn === 'right' ? 'right' : 'left',
   };
 }
 
@@ -118,7 +134,7 @@ function buildStyles(metrics) {
       --page-margin: ${metrics.margin};
       --content-width: calc(var(--page-width) - (2 * var(--page-margin)));
       --content-height: calc(var(--page-height) - (2 * var(--page-margin)));
-      --footer-height: 2.8mm;
+      --footer-height: 5.2mm;
       --body-height: calc(var(--content-height) - var(--footer-height));
       --column-gap: 5.5mm;
       --column-width: calc((var(--content-width) - var(--column-gap)) / 2);
@@ -215,25 +231,43 @@ function buildStyles(metrics) {
     }
 
     .toc-page-body.first {
-      gap: 3.2mm;
+      gap: 4.2mm;
     }
 
     .toc-page-body.continued {
       gap: 1.1mm;
     }
 
-    .toc-page h1 {
+    .toc-title-block {
+      display: grid;
+      justify-items: center;
+      gap: 1.8mm;
+    }
+
+    .toc-page .toc-app-title {
       margin: 0;
       text-align: center;
-      font-size: 1.42em;
+      font-size: 1.48em;
       line-height: 1.08;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.045em;
       font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
       font-weight: 700;
+      color: #2b241c;
+    }
+
+    .toc-page .toc-book-title {
+      margin: 0;
+      text-align: center;
+      font-size: 1.16em;
+      line-height: 1.12;
+      letter-spacing: 0.03em;
+      font-family: "Book Antiqua", "Palatino Linotype", Georgia, serif;
+      font-weight: 700;
+      color: #8a5a1f;
     }
 
     .toc-spacer {
-      height: 3.2mm;
+      height: 4.2mm;
     }
 
     .toc-columns {
@@ -257,31 +291,12 @@ function buildStyles(metrics) {
     .toc-heading.rtl {
       direction: rtl;
       text-align: right;
-      unicode-bidi: plaintext;
+      unicode-bidi: isolate;
     }
 
     .toc-heading.ltr {
       direction: ltr;
       text-align: left;
-      unicode-bidi: plaintext;
-    }
-
-    .toc-heading-text {
-      display: block;
-      width: 100%;
-      max-width: 100%;
-    }
-
-    .toc-heading.rtl .toc-heading-text {
-      direction: rtl;
-      text-align: right;
-      unicode-bidi: plaintext;
-    }
-
-    .toc-heading.ltr .toc-heading-text {
-      direction: ltr;
-      text-align: left;
-      unicode-bidi: plaintext;
     }
 
     .toc-row {
@@ -422,7 +437,7 @@ function buildStyles(metrics) {
       position: absolute;
       left: 0;
       right: 0;
-      bottom: 0.3mm;
+      bottom: 1.9mm;
       text-align: center;
       font-size: 0.66em;
       line-height: 1;
@@ -432,12 +447,15 @@ function buildStyles(metrics) {
 
     .page-back-link {
       position: absolute;
-      left: 0.8mm;
-      bottom: 0.3mm;
-      font-size: 0.62em;
+      left: 0;
+      right: 0;
+      bottom: 0.25mm;
+      text-align: center;
+      font-size: 0.78em;
       line-height: 1;
-      color: #5f5040;
+      color: #8a5a1f;
       text-decoration: underline;
+      font-weight: 600;
     }
 
     .rtl {
@@ -668,6 +686,15 @@ function buildSongPageNumbers(songPages, tocPagesCount) {
   return pageNumbers;
 }
 
+function buildTocTitleHtml(metrics) {
+  return `
+    <div class="toc-title-block">
+      <h1 class="toc-app-title">${sanitizeText(metrics.appTitle)}</h1>
+      <h2 class="toc-book-title">${sanitizeText(metrics.bookTitle)} - Table of Contents</h2>
+    </div>
+  `;
+}
+
 function buildTocRows(songs, pageNumbers) {
   const artistGroups = new Map();
 
@@ -687,7 +714,7 @@ function buildTocRows(songs, pageNumbers) {
     rows.push({
       type: 'heading',
       text: artist,
-      direction: textDirectionClass(artist),
+      direction: artistSongs.some((song) => song.isHebrew) ? 'rtl' : textDirectionClass(artist),
     });
 
     for (const song of artistSongs) {
@@ -706,7 +733,7 @@ function buildTocRows(songs, pageNumbers) {
 
 function tocRowHtml(row) {
   if (row.type === 'heading') {
-    return `<div class="toc-heading ${row.direction}"><span class="toc-heading-text">${sanitizeText(row.text)}</span></div>`;
+    return `<div class="toc-heading ${row.direction}" dir="${row.direction}">${sanitizeText(row.text)}</div>`;
   }
 
   return `
@@ -723,7 +750,7 @@ function groupedTocHtml(tocPages) {
       (columns, pageIndex) => `
         <section class="book-page toc-page" ${pageIndex === 0 ? 'id="songbook-toc"' : ''}>
           <div class="page-body toc-page-body ${pageIndex === 0 ? 'first' : 'continued'}">
-            ${pageIndex === 0 ? '<h1>Shir On - Table of Contents</h1>' : '<div class="toc-spacer"></div>'}
+            ${pageIndex === 0 ? buildTocTitleHtml(columns.metrics || {}) : '<div class="toc-spacer"></div>'}
             <div class="toc-columns">
               <div class="toc-column toc-column-right">
                 ${columns.right.map((row) => tocRowHtml(row)).join('')}
@@ -796,7 +823,7 @@ function buildMeasurementHtml(metrics) {
     </section>
     <section class="book-page toc-page">
       <div class="page-body toc-page-body first">
-        <h1>Table of Contents</h1>
+        ${buildTocTitleHtml(metrics)}
         <div class="toc-columns">
           <div id="probe-toc-first-column" class="toc-column toc-column-right"></div>
           <div class="toc-column toc-column-left"></div>
@@ -882,9 +909,11 @@ async function measureTocRowHeights(page, tocRows) {
 
 function paginateTocRowsDeterministically(rows, metrics) {
   const pages = [];
-  let current = { right: [], left: [] };
+  let current = { right: [], left: [], metrics };
   let pageIndex = 0;
-  let side = 'right';
+  const primarySide = metrics.tocStartColumn === 'right' ? 'right' : 'left';
+  const secondarySide = primarySide === 'right' ? 'left' : 'right';
+  let side = primarySide;
   let used = 0;
 
   function currentLimit() {
@@ -896,14 +925,14 @@ function paginateTocRowsDeterministically(rows, metrics) {
     const rowHeight = Math.max(1, row.height || 0);
 
     if (used + rowHeight > limit) {
-      if (side === 'right') {
-        side = 'left';
+      if (side === primarySide) {
+        side = secondarySide;
         used = 0;
       } else {
         pages.push(current);
-        current = { right: [], left: [] };
+        current = { right: [], left: [], metrics };
         pageIndex += 1;
-        side = 'right';
+        side = primarySide;
         used = 0;
       }
     }
@@ -1140,6 +1169,7 @@ function buildHtml(songPages, tocPages, metrics) {
 export async function generatePdf(inputSongs, config = {}) {
   const songs = prepareSongs(inputSongs);
   const metrics = getPageMetrics(config);
+  metrics.tocStartColumn = inferTocStartColumn(songs, config);
 
   const browser = await puppeteer.launch({
     headless: 'new',

@@ -2,6 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 
+function isHebrewText(value = '') {
+  return /[\u0590-\u05FF]/.test(String(value || ''));
+}
+
 export default function CollectionsPage() {
   const navigate = useNavigate();
 
@@ -153,6 +157,8 @@ export default function CollectionsPage() {
             format: 'A4',
             includeToc: true,
             songsPerPage: 1,
+            bookTitle: selectedCollection?.name || 'Collection',
+            tocStartColumn: isHebrewText(selectedCollection?.name || '') ? 'right' : 'left',
           },
         });
     } catch (e) {

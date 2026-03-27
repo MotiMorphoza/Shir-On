@@ -173,6 +173,22 @@ Code:
 - [frontend/src/components/FilterBar.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/components/FilterBar.jsx)
 - [frontend/src/pages/DuplicatesPage.jsx](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/frontend/src/pages/DuplicatesPage.jsx)
 
+### 9b. Playlist-aware print requests could drop their songs
+
+Status: `Fixed`
+
+What changed:
+- the print route now resolves playlist metadata separately from song selection
+- requests that include both `songIds` and `playlistId` once again print the explicit song selection instead of falling into an empty playlist-only branch
+- playlist-only print requests now also load songs from that playlist when no explicit `songIds` were sent
+
+Why it mattered:
+- the Library and Songbook screens send `playlistId` together with the visible song selection so the printed title and TOC direction can reflect the chosen playlist
+- the old branch order treated `playlistId` as mutually exclusive with `songIds`, which could leave the print route with zero songs and make printing fail even though the frontend had sent a valid scope
+
+Code:
+- [backend/src/routes/print.js](/C:/Users/Dell%207490/Documents/GitHub/Shir-On/backend/src/routes/print.js)
+
 ### 10. Unused legacy single-song lyrics export
 
 Status: `Fixed`
@@ -329,6 +345,12 @@ What changed:
 - print page margins, footer space, and in-song line spacing were tightened slightly again after the first working layout to reduce unused top/bottom space and fit more lyric lines per page
 - printed TOC artist headings now apply explicit RTL/LTR alignment and edge anchoring as headings, so Hebrew artist names stay right-aligned in the contents pages while English names remain left-aligned
 - printed TOC headings now use a block-level edge anchor instead of flex-based alignment, and the TOC title now renders as `Shir On - Table of Contents` with more space before the contents begin
+- printed Hebrew TOC artist headings now also force `dir="rtl"` directly in the heading markup, because CSS alignment alone was still not enough in Chromium PDF output
+- printed TOC artist headings now infer their RTL/LTR class from the grouped songs as well, so artists stored in Latin letters still align as Hebrew headings when their section songs are Hebrew
+- printed TOC artist headings now use a plain block + `text-align` structure instead of the older grid/max-content wrapper, because Chromium PDF was not reliably honoring that wrapper for Hebrew alignment
+- printed TOC heading is now a centered two-line title that includes the printed list name, and TOC filling now starts from the left for non-Hebrew books or from the right for Hebrew books
+- printed song pages now center `Back to Contents` directly beneath the page number, using a larger accent link instead of a small side footer link
+- the printed TOC title now gives the printed list name a larger accent serif line and a little more breathing room before the first artist headings
 - the print preparation screen now shows one concise loading message instead of two near-duplicate status lines
 - the print error screen now also keeps only the core error message instead of adding an extra explanatory footer line
 - digital songbook TOC jumps now respect the sticky header height, so song titles and `Open` links stay visible after navigation
@@ -337,6 +359,7 @@ What changed:
 - the Library and Songbook pages now remember their last chosen playlist/filter scope after navigation by persisting view state in local storage
 - long printed songs now re-measure both columns after the initial split and move trailing lines into the next column when needed, so footer-adjacent lines do not get clipped at the bottom of the page
 - digital songbook TOC artist headings now align by language, and opening a song from the songbook now preserves both the current song position and the TOC rail position for the return trip from the editor
+- the digital songbook TOC now includes a search field that filters visible songs and artist groups by song title, artist, or album without changing the underlying playlist scope
 - the top-nav `Songbook` entry now resets the digital songbook to its beginning, so a deliberate menu-open does not restore an older reading position
 
 Why it mattered:

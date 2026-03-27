@@ -114,6 +114,7 @@ Useful commands:
 - the import screen now uses one Spotify input for playlist, album, or song URLs/URIs/IDs, and the backend detects which Spotify object to import
 - Spotify single-song import is now supported from that same unified Spotify import field
 - the Library screen now embeds a compact Spotify import row inside the same top header block as the page title and the `Print` / `Fetch` actions; the `IMPORT` action sits in that Spotify row header and the flow still only forwards into the Import screen so the actual job and progress stay there instead of duplicating import state inside Library
+- the Library header now stacks its right-side actions as `FETCH LYRICS` above `PRINT`, while the centered Spotify import row stays shorter and visually aligned on one level
 - JSON import remains available as an advanced path for pasted export data or script-generated record arrays
 - the `Fetch Lyrics` page can also be scoped to one playlist and reconnect to the tracked lyrics job after navigation without jumping to an unrelated run
 - the `Fetch Lyrics` screen now loads explicitly requested songs through one bulk API request instead of one request per song
@@ -148,9 +149,18 @@ Useful commands:
 - print margins, footer space, and in-song line spacing are now slightly tighter to fit more lyrics on each page without changing the fixed two-column book structure
 - TOC artist headings now apply explicit RTL/LTR alignment plus edge anchoring too, so Hebrew artist names stay right-aligned in the printed contents pages while English names stay left-aligned
 - the printed TOC title now renders as `Shir On - Table of Contents` in a more book-like serif heading with extra breathing room before the artist/title rows begin
+- the printed TOC heading is now a centered two-line title: `Shir - On` plus `<printed list name> - Table of Contents`, with extra space before the contents begin
+- printed Hebrew artist headings in the TOC now force `dir="rtl"` in the markup itself, not just CSS alignment, so Chromium PDF keeps them anchored to the right edge of their column
+- printed TOC artist headings now infer RTL from the grouped songs as well, so artists stored with Latin-script names still right-align when their songbook section is Hebrew
+- printed TOC artist headings now use a plain block-level alignment pattern instead of the older grid/max-content wrapper, because Chromium PDF was not reliably honoring that layout for Hebrew headings
+- TOC filling now starts from the left column for non-Hebrew printed books and from the right column for Hebrew ones
 - long printed songs now re-measure their start and continuation columns before final render, so a last line near the footer is pushed into the next column instead of being clipped
+- printed song pages now place `Back to Contents` directly under the page number, centered, slightly larger, and in the same accent color family as the TOC title
+- the printed TOC title now emphasizes the printed list name more strongly with a larger accent serif line and extra gap before the contents begin
+- the print route now honors playlist-aware print requests even when the frontend sends both `songIds` and `playlistId`, instead of accidentally dropping the selected songs and failing with an empty print scope
 - the Library screen now remembers the last chosen playlist and filter state when you leave the page and return
 - the Songbook screen now remembers the last chosen playlist scope when you leave the page and return
+- the digital songbook now includes a search field above the TOC that filters visible songs and artist groups by song title, artist name, or album
 - the print preparation screen now shows one concise loading message instead of repeating the same status twice
 - the print error screen now stays concise too, without the extra explanatory footer sentence
 - startup repair now also cleans stored HTML entities like `&#039;` out of artist names, song titles, lyrics, and tags, and new saves decode those entities before storage

@@ -109,6 +109,7 @@ export default function SongbookPage() {
   const [songs, setSongs] = useState([]);
   const [playlists, setPlaylists] = useState([]);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState(() => readSongbookView());
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -239,7 +240,28 @@ export default function SongbookPage() {
     return () => window.cancelAnimationFrame(restore);
   }, [loading, error, songs, selectedPlaylistId]);
 
-  const artistGroups = useMemo(() => groupSongsByArtist(songs), [songs]);
+  const filteredSongs = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    if (!query) {
+      return songs;
+    }
+
+    return songs.filter((song) => {
+      const haystack = [
+        song.title,
+        song.artist_name,
+        song.album_title,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+      return haystack.includes(query);
+    });
+  }, [songs, searchQuery]);
+
+  const artistGroups = useMemo(() => groupSongsByArtist(filteredSongs), [filteredSongs]);
   const selectedPlaylistName = useMemo(() => {
     if (!selectedPlaylistId) {
       return 'All songs';
@@ -254,6 +276,7 @@ export default function SongbookPage() {
 
     try {
       const songIds = songs.map((song) => song.id).filter(Boolean);
+      const bookTitle = selectedPlaylistId ? selectedPlaylistName : 'All Songs';
 
       if (songIds.length === 0) {
         setInfo('No songs in the current songbook scope.');
@@ -266,6 +289,9 @@ export default function SongbookPage() {
           format: 'A4',
           includeToc: true,
           songsPerPage: 2,
+          bookTitle,
+          playlistId: selectedPlaylistId || '',
+          tocStartColumn: isHebrewText(bookTitle) ? 'right' : 'left',
         },
       });
 
@@ -281,7 +307,7 @@ export default function SongbookPage() {
         <div>
           <h1 style={styles.title}>Digital Songbook</h1>
           <p style={styles.subTitle}>
-            {selectedPlaylistName} | {songs.length} song(s) | {artistGroups.length} artist group(s)
+            {selectedPlaylistName} | {filteredSongs.length} song(s) | {artistGroups.length} artist group(s)
           </p>
         </div>
 
@@ -316,8 +342,15 @@ export default function SongbookPage() {
             <div ref={tocCardRef} style={styles.tocCard}>
               <strong style={styles.tocTitle}>Table of Contents</strong>
               <p style={styles.tocHint}>
-                {selectedPlaylistName} | {songs.length} songs
+                {selectedPlaylistName} | {filteredSongs.length} songs
               </p>
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search songs or artists"
+                style={styles.tocSearch}
+              />
 
               {artistGroups.map((group) => (
                 <div key={group.artist} style={styles.tocGroup}>
@@ -423,7 +456,11 @@ export default function SongbookPage() {
             ))}
 
             {!artistGroups.length && (
-              <p style={styles.info}>No songs match the current reading mode.</p>
+              <p style={styles.info}>
+                {searchQuery.trim()
+                  ? 'No songs match the current search.'
+                  : 'No songs match the current reading mode.'}
+              </p>
             )}
           </main>
         </div>
@@ -519,6 +556,16 @@ const styles = {
     margin: '0 0 16px',
     color: '#847564',
     fontSize: 13,
+  },
+  tocSearch: {
+    width: '100%',
+    marginBottom: 16,
+    padding: '10px 12px',
+    borderRadius: 12,
+    border: '1px solid rgba(114, 98, 78, 0.22)',
+    background: '#fff',
+    color: '#3b332a',
+    fontSize: 14,
   },
   tocGroup: {
     marginBottom: 16,

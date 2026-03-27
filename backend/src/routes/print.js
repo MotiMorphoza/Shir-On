@@ -1,6 +1,7 @@
 import { Router }     from 'express';
 import { getSongById, getSongs } from '../services/songService.js';
 import { getCollection }         from '../services/collectionsService.js';
+import { getPlaylist }           from '../services/playlistsService.js';
 import { generatePdf }           from '../print/engine.js';
 
 const router = Router();
@@ -31,14 +32,25 @@ router.post('/pdf', async (req, res) => {
         ? JSON.parse(req.body.payload)
         : req.body;
     const { songIds, collectionId, config = {} } = payload || {};
+    const nextConfig = { ...(config || {}) };
 
     let songs = [];
+    const playlist = nextConfig.playlistId ? getPlaylist(nextConfig.playlistId) : null;
+
+    if (!nextConfig.bookTitle && playlist?.name) {
+      nextConfig.bookTitle = playlist.name;
+    }
 
     if (collectionId) {
       const col = getCollection(collectionId);
       songs = col?.songs?.map(s => getSongById(s.id)).filter(Boolean) || [];
+      if (!nextConfig.bookTitle && col?.name) {
+        nextConfig.bookTitle = col.name;
+      }
     } else if (songIds?.length) {
       songs = parseSongIds(songIds) || [];
+    } else if (nextConfig.playlistId) {
+      songs = getSongs({ limit: 2000, sort: 'artist', playlistId: nextConfig.playlistId });
     } else {
       songs = getSongs({ limit: 2000, sort: 'artist' });
     }
@@ -48,7 +60,11 @@ router.post('/pdf', async (req, res) => {
     if (songs.length === 0)
       return res.status(400).json({ error: 'No songs to print' });
 
-    const pdf = await generatePdf(songs, config);
+    if (!nextConfig.bookTitle) {
+      nextConfig.bookTitle = 'All Songs';
+    }
+
+    const pdf = await generatePdf(songs, nextConfig);
 
     res.set({
       'Content-Type':        'application/pdf',

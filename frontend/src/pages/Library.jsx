@@ -15,6 +15,10 @@ const DEFAULT_FILTERS = {
   sort: 'artist',
 };
 
+function isHebrewText(value = '') {
+  return /[\u0590-\u05FF]/.test(String(value || ''));
+}
+
 function readLibraryView() {
   if (typeof window === 'undefined') {
     return {
@@ -177,6 +181,7 @@ export default function Library() {
 
     try {
       const targetIds = selected.size ? [...selected] : songs.map((song) => song.id);
+      const bookTitle = playlistId ? scope.title : 'All Songs';
 
       if (targetIds.length === 0) {
         setInfo('No visible songs to print.');
@@ -189,6 +194,9 @@ export default function Library() {
           format: 'A4',
           includeToc: true,
           songsPerPage: 2,
+          bookTitle,
+          playlistId: playlistId || '',
+          tocStartColumn: isHebrewText(bookTitle) ? 'right' : 'left',
         },
       });
 
@@ -230,11 +238,11 @@ export default function Library() {
           </div>
 
           <div style={styles.headerActions}>
-            <button type="button" style={styles.primaryBtn} onClick={printSelected}>
-              {selected.size ? 'Print Selected' : 'Print Visible'}
-            </button>
             <button type="button" style={styles.secondaryBtn} onClick={openLyricsRun}>
-              {selected.size ? 'Fetch Lyrics for Selected' : 'Fetch Lyrics for Visible'}
+              FETCH LYRICS
+            </button>
+            <button type="button" style={styles.primaryBtn} onClick={printSelected}>
+              PRINT
             </button>
           </div>
         </header>
@@ -359,10 +367,9 @@ const styles = {
     textAlign: 'left',
   },
   headerActions: {
-    display: 'flex',
+    display: 'grid',
     gap: 10,
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
+    justifyItems: 'end',
   },
   title: {
     margin: '0 0 8px',
@@ -409,7 +416,7 @@ const styles = {
     justifyContent: 'center',
   },
   spotifyImportCard: {
-    width: 'min(540px, 100%)',
+    width: 'min(460px, 100%)',
   },
   spotifyImportBtn: {
     padding: '10px 16px',

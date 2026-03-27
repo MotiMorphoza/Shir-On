@@ -105,7 +105,7 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    marginBottom: 6,
+    marginBottom: 4,
   },
   headerAction: {
     marginLeft: 'auto',
@@ -129,7 +129,7 @@ const styles = {
   },
   input: {
     width: '100%',
-    padding: '10px 12px',
+    padding: '8px 12px',
     borderRadius: 12,
     border: '1px solid #d2c7b7',
     background: '#fff',

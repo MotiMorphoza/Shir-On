@@ -215,9 +215,15 @@ Verified capabilities:
 - the print layout uses reduced header/footer spacing and denser TOC spacing to fit more content into the same page footprint
 - TOC pages are now split into explicit right/left columns in code instead of relying on browser multi-column balancing
 - TOC rows now flow sequentially through the right column and then the left, even across artist boundaries, to reduce dead space
+- the TOC start column now follows the language direction of the printed book title: Hebrew books start from the right column, non-Hebrew books from the left
 - the print engine now measures page geometry, TOC rows, and lyric token heights in a hidden Puppeteer harness, then performs page and column assignment deterministically in Node
+- the printed TOC heading is now a centered two-line heading that includes the printed scope name, not just a generic table-of-contents label
+- the printed TOC now emphasizes the printed scope name more strongly, and song pages place a centered `Back to Contents` link directly under the page number
+- printed TOC artist headings now derive Hebrew/LTR alignment from the songs grouped under that artist, not only from the stored artist name string
+- the current TOC heading renderer now uses a simple block + `text-align` pattern instead of a grid/max-content wrapper because Chromium PDF proved unreliable with the older structure
 - long printed songs now render through explicit right/left page columns in the final HTML markup, with their token split decided before the final PDF render
 - print-column language selection now follows song title/lyrics content instead of artist or album metadata, so non-Hebrew songs keep their left-column start rule
 - Hebrew song headers now keep one right-aligned metadata block even when artist names or album metadata use Latin characters
 - print margins, footer space, and lyric line spacing were tightened again after the first working two-column format to fit more content into each physical page
 - the current frontend now triggers print from the visible library scope, the current songbook scope, or a single song page
+- the digital songbook now includes a TOC-side search field that filters the currently visible songbook by song title, artist, or album without changing playlist scope
