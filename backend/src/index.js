@@ -23,6 +23,7 @@ const { default: jobsRouter } = await import('./routes/jobs.js');
 const { default: db } = await import('./db/index.js');
 const {
   repairHtmlEntities,
+  repairLyricsFormatting,
   repairLyricsUniqueness,
   repairNormalizedFields,
 } = await import('./db/repair.js');
@@ -32,6 +33,7 @@ db.exec(schema);
 
 const htmlEntityRepair = repairHtmlEntities();
 const repaired = repairNormalizedFields();
+const lyricsFormattingRepair = repairLyricsFormatting();
 const lyricsRepair = repairLyricsUniqueness();
 
 if (
@@ -54,6 +56,10 @@ if (
   lyricsRepair.created_unique_index
 ) {
   console.log('Lyrics uniqueness repair applied:', lyricsRepair);
+}
+
+if (lyricsFormattingRepair.lyrics) {
+  console.log('Lyrics formatting repair applied:', lyricsFormattingRepair);
 }
 
 const app = express();

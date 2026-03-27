@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/index.js';
 import { normalize } from '../utils/normalize.js';
 import { sanitizeText } from '../utils/sanitize.js';
+import { cleanLyricsText } from '../utils/lyricsCleanup.js';
 
 function cleanString(value, fallback = '') {
   if (typeof value !== 'string') {
@@ -491,7 +492,7 @@ export function saveLyrics(
     .prepare('SELECT id FROM lyrics WHERE song_id = ? LIMIT 1')
     .get(songId);
 
-  const cleanText = sanitizeText(text);
+  const cleanText = sanitizeText(cleanLyricsText(text));
 
   const hasLyrics = Boolean(cleanText && cleanText.trim());
   const status = !hasLyrics

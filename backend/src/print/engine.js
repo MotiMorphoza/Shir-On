@@ -1,5 +1,6 @@
 import puppeteer from 'puppeteer';
 import { sanitizeText } from '../utils/sanitize.js';
+import { cleanLyricsText } from '../utils/lyricsCleanup.js';
 
 const FONT_SIZE_PRESETS = {
   small: 11,
@@ -64,8 +65,7 @@ function sortSongsForBook(songs = []) {
 }
 
 function buildLyricsTokens(text) {
-  return String(text || '')
-    .replace(/\r\n?/g, '\n')
+  return cleanLyricsText(text)
     .split('\n')
     .map((line, index, lines) => {
       const empty = line.trim() === '';
@@ -134,8 +134,8 @@ function buildStyles(metrics) {
       --page-margin: ${metrics.margin};
       --content-width: calc(var(--page-width) - (2 * var(--page-margin)));
       --content-height: calc(var(--page-height) - (2 * var(--page-margin)));
-      --header-height: 5.4mm;
-      --footer-height: 5.2mm;
+      --header-height: 7.2mm;
+      --footer-height: 8.4mm;
       --body-height: calc(var(--content-height) - var(--header-height) - var(--footer-height));
       --column-gap: 5.5mm;
       --column-width: calc((var(--content-width) - var(--column-gap)) / 2);
@@ -200,9 +200,14 @@ function buildStyles(metrics) {
 
     .page-header {
       position: absolute;
-      top: 0.4mm;
+      top: 0;
       left: 0;
       right: 0;
+      height: var(--header-height);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.4mm 4mm 0;
       text-align: center;
       font-size: 0.78em;
       line-height: 1.1;
@@ -373,33 +378,45 @@ function buildStyles(metrics) {
     }
 
     .song-header-main {
-      display: grid;
-      gap: 0.35mm;
+      display: block;
+    }
+
+    .song-header-line {
+      margin: 0;
+      font-size: 0.93em;
+      line-height: 1.14;
+      letter-spacing: 0.008em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .song-title {
-      margin: 0;
-      font-size: 1.08em;
-      line-height: 1.1;
+      font-weight: 700;
+      color: #111;
     }
 
     .song-artist {
-      margin: 0;
-      font-size: 0.9em;
-      line-height: 1.05;
+      font-weight: 600;
       color: #333;
-      font-weight: 700;
     }
 
     .song-meta {
-      margin: 0;
-      font-size: 0.78em;
-      line-height: 1.05;
       color: #555;
+      font-size: 0.92em;
+    }
+
+    .song-header-sep {
+      color: #8a5a1f;
+      font-weight: 400;
+      padding: 0 0.85mm;
+      opacity: 0.85;
     }
 
     .song-lyrics {
       white-space: normal;
+      display: flow-root;
+      padding-bottom: 1.25mm;
     }
 
     .song-card .song-lyrics,
@@ -445,8 +462,14 @@ function buildStyles(metrics) {
       page-break-inside: avoid;
     }
 
+    .song-lyrics > .lyrics-line:last-child,
+    .song-lyrics > .missing:last-child,
+    .song-lyrics > .lyrics-spacer:last-child {
+      margin-bottom: 0;
+    }
+
     .lyrics-spacer {
-      height: 0.8mm;
+      height: 2.1mm;
     }
 
     .missing {
@@ -455,11 +478,21 @@ function buildStyles(metrics) {
       font-style: italic;
     }
 
-    .page-number {
+    .page-footer {
       position: absolute;
       left: 0;
       right: 0;
-      bottom: 2.6mm;
+      bottom: 0;
+      height: var(--footer-height);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 0.5mm 0 0.6mm;
+      gap: 1.75mm;
+    }
+
+    .page-number {
       text-align: center;
       font-size: 0.74em;
       line-height: 1;
@@ -468,12 +501,8 @@ function buildStyles(metrics) {
     }
 
     .page-back-link {
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0.2mm;
       text-align: center;
-      font-size: 0.78em;
+      font-size: 0.8em;
       line-height: 1;
       color: #8a5a1f;
       text-decoration: underline;
@@ -574,9 +603,13 @@ function songHeaderHtml(song) {
   return `
     <header class="song-header">
       <div class="song-header-main ${blockDirectionClass}">
-        <h2 class="song-title">${sanitizeText(song.title || '')}</h2>
-        <p class="song-artist">${sanitizeText(song.artist_name || 'Unknown Artist')}</p>
-        <p class="song-meta">${sanitizeText(meta)}</p>
+        <p class="song-header-line">
+          <span class="song-title">${sanitizeText(song.title || '')}</span>
+          <span class="song-header-sep">|</span>
+          <span class="song-artist">${sanitizeText(song.artist_name || 'Unknown Artist')}</span>
+          <span class="song-header-sep">|</span>
+          <span class="song-meta">${sanitizeText(meta)}</span>
+        </p>
       </div>
     </header>
   `;
@@ -673,6 +706,14 @@ function paginateSongsDeterministically(songLayouts, metrics) {
   }
 
   if (pending) {
+    if (pending.flowFallback) {
+      pages.push({
+        layout: 'single',
+        song: pending.flowFallback,
+      });
+      return pages;
+    }
+
     pages.push({
       layout: 'spread',
       columns: {
@@ -719,6 +760,42 @@ function buildTocTitleHtml(metrics) {
 
 function buildRunningHeaderHtml(metrics) {
   return `<div class="page-header">${sanitizeText(`Shir On - ${metrics.bookTitle || 'All Songs'}`)}</div>`;
+}
+
+function buildPageFooterHtml(pageNumber, includeBackLink = false) {
+  return `
+    <footer class="page-footer">
+      <div class="page-number">${pageNumber}</div>
+      ${includeBackLink ? '<a class="page-back-link" href="#songbook-toc">Back to Contents</a>' : ''}
+    </footer>
+  `;
+}
+
+function buildSingleSpreadMeasurementHtml(layout, side, metrics) {
+  return `
+    <section class="book-page song-book-page">
+      ${buildRunningHeaderHtml(metrics)}
+      <div class="page-body page-spread">
+        <div class="page-column page-column-right">
+          ${side === 'right' ? songCardHtml(layout) : ''}
+        </div>
+        <div class="page-column page-column-left">
+          ${side === 'left' ? songCardHtml(layout) : ''}
+        </div>
+      </div>
+      ${buildPageFooterHtml(1, true)}
+    </section>
+  `;
+}
+
+function buildFlowPageMeasurementHtml(layout, metrics) {
+  return `
+    <section class="book-page song-book-page">
+      ${buildRunningHeaderHtml(metrics)}
+      ${songFlowPageHtml(layout)}
+      ${buildPageFooterHtml(1, true)}
+    </section>
+  `;
 }
 
 function buildTocRows(songs, pageNumbers) {
@@ -775,7 +852,7 @@ function groupedTocHtml(tocPages) {
     .map(
       (columns, pageIndex) => `
         <section class="book-page toc-page" ${pageIndex === 0 ? 'id="songbook-toc"' : ''}>
-          ${buildRunningHeaderHtml(columns.metrics || {})}
+          ${pageIndex === 0 ? '' : buildRunningHeaderHtml(columns.metrics || {})}
           <div class="page-body toc-page-body ${pageIndex === 0 ? 'first' : 'continued'}">
             ${pageIndex === 0 ? buildTocTitleHtml(columns.metrics || {}) : '<div class="toc-spacer"></div>'}
             <div class="toc-columns">
@@ -787,7 +864,7 @@ function groupedTocHtml(tocPages) {
               </div>
             </div>
           </div>
-          <footer class="page-number">${pageIndex + 1}</footer>
+          ${buildPageFooterHtml(pageIndex + 1, false)}
         </section>
       `
     )
@@ -798,18 +875,14 @@ function bookPagesHtml(songPages, tocPagesCount, metrics) {
   return songPages
     .map((page, index) => {
       const pageNumber = tocPagesCount + index + 1;
-      const backToTocLink =
-        tocPagesCount > 0
-          ? '<a class="page-back-link" href="#songbook-toc">Back to Contents</a>'
-          : '';
+      const includeBackLink = tocPagesCount > 0;
 
       if (page.layout === 'single') {
         return `
           <section class="book-page song-book-page">
             ${buildRunningHeaderHtml(metrics)}
             ${songFlowPageHtml(page.song)}
-            ${backToTocLink}
-            <footer class="page-number">${pageNumber}</footer>
+            ${buildPageFooterHtml(pageNumber, includeBackLink)}
           </section>
         `;
       }
@@ -825,8 +898,7 @@ function bookPagesHtml(songPages, tocPagesCount, metrics) {
               ${page.columns.left ? songCardHtml(page.columns.left) : ''}
             </div>
           </div>
-          ${backToTocLink}
-          <footer class="page-number">${pageNumber}</footer>
+          ${buildPageFooterHtml(pageNumber, includeBackLink)}
         </section>
       `;
     })
@@ -848,7 +920,7 @@ function buildMeasurementHtml(metrics) {
         <div id="probe-column" class="page-column page-column-right"></div>
         <div class="page-column page-column-left"></div>
       </div>
-      <footer class="page-number">1</footer>
+      ${buildPageFooterHtml(1, true)}
     </section>
     <section class="book-page toc-page">
       <div class="page-body toc-page-body first">
@@ -858,7 +930,7 @@ function buildMeasurementHtml(metrics) {
           <div class="toc-column toc-column-left"></div>
         </div>
       </div>
-      <footer class="page-number">1</footer>
+      ${buildPageFooterHtml(1, false)}
     </section>
     <section class="book-page toc-page">
       <div class="page-body toc-page-body continued">
@@ -868,7 +940,7 @@ function buildMeasurementHtml(metrics) {
           <div class="toc-column toc-column-left"></div>
         </div>
       </div>
-      <footer class="page-number">2</footer>
+      ${buildPageFooterHtml(2, false)}
     </section>
     <div id="measure-sandbox" class="measure-column"></div>
   </div>
@@ -895,7 +967,13 @@ async function measurePageMetrics(page, metrics) {
     throw new Error('Failed to measure print page geometry');
   }
 
-  return Object.assign(metrics, values, { safetyPx: 2 });
+  return Object.assign(metrics, values, {
+    safetyPx: 8,
+    compactSafetyPx: 14,
+    singleSongCompactExtraPx: 12,
+    compactComfortPx: 22,
+    renderValidationPx: 24,
+  });
 }
 
 async function measureSandboxHeight(page, html, sandboxClass = 'measure-column') {
@@ -934,6 +1012,10 @@ async function measureTocRowHeights(page, tocRows) {
     ...row,
     height: heights[index],
   }));
+}
+
+function getSongVariantCacheKey(song, fontClass) {
+  return `${song.id}::${fontClass}`;
 }
 
 function paginateTocRowsDeterministically(rows, metrics) {
@@ -977,8 +1059,14 @@ function paginateTocRowsDeterministically(rows, metrics) {
   return pages;
 }
 
-async function measureCompactSong(page, song, fontClass) {
-  return measureSandboxHeight(
+async function measureCompactSong(page, song, fontClass, measureCache = null) {
+  const cacheKey = getSongVariantCacheKey(song, fontClass);
+
+  if (measureCache?.compactHeights?.has(cacheKey)) {
+    return measureCache.compactHeights.get(cacheKey);
+  }
+
+  const height = await measureSandboxHeight(
     page,
     songCardHtml({
       song,
@@ -986,6 +1074,12 @@ async function measureCompactSong(page, song, fontClass) {
       fontClass,
     })
   );
+
+  if (measureCache?.compactHeights) {
+    measureCache.compactHeights.set(cacheKey, height);
+  }
+
+  return height;
 }
 
 function splitSongTokensByMeasuredHeights(tokens, heights, firstLimit, secondLimit) {
@@ -1007,6 +1101,9 @@ function splitSongTokensByMeasuredHeights(tokens, heights, firstLimit, secondLim
   return {
     startTokens,
     continueTokens,
+    startCount: startTokens.length,
+    startTextHeight: firstHeight,
+    continueTextHeight: continueHeight,
     fits: startTokens.length > 0 && continueHeight <= secondLimit,
   };
 }
@@ -1018,27 +1115,134 @@ async function measureFlowPaneHeight(page, song, fontClass, tokens, includeHeade
   );
 }
 
-async function refineFlowSplitToFit(page, song, fontClass, split, metrics) {
-  const limit = Math.max(0, metrics.bodyHeightPx - metrics.safetyPx);
-  const startTokens = [...split.startTokens];
-  const continueTokens = [...split.continueTokens];
+async function measureSingleSpreadOverflow(page, layout, side, metrics) {
+  const html = buildSingleSpreadMeasurementHtml(layout, side, metrics);
 
-  while (startTokens.length > 0) {
-    const startHeight = await measureFlowPaneHeight(page, song, fontClass, startTokens, true);
+  return page.evaluate(
+    ({ innerHtml, occupiedSide }) => {
+      const sandbox = document.getElementById('measure-sandbox');
+      sandbox.className = 'measure-stage';
+      sandbox.innerHTML = innerHtml;
 
-    if (startHeight <= limit) {
-      break;
+      function getLastContentBottom(root) {
+        const lyrics = root?.querySelector('.song-lyrics');
+        if (!lyrics) {
+          return root?.getBoundingClientRect().bottom ?? 0;
+        }
+
+        const lastNode = lyrics.querySelector('.lyrics-line:last-child, .missing:last-child, .lyrics-spacer:last-child');
+        return (lastNode || lyrics).getBoundingClientRect().bottom;
+      }
+
+      const column = sandbox.querySelector(`.page-column-${occupiedSide}`);
+      const card = column?.querySelector('.song-card');
+
+      let overflow = false;
+
+      if (column && card) {
+        const columnRect = column.getBoundingClientRect();
+        const contentBottom = getLastContentBottom(card);
+        overflow = Math.ceil(contentBottom + 1) > Math.floor(columnRect.bottom - 2);
+      }
+
+      sandbox.innerHTML = '';
+      sandbox.className = 'measure-column';
+      return overflow;
+    },
+    {
+      innerHtml: html,
+      occupiedSide: side,
     }
+  );
+}
 
-    continueTokens.unshift(startTokens.pop());
+async function measureFlowPageOverflow(page, layout, metrics) {
+  const html = buildFlowPageMeasurementHtml(layout, metrics);
+
+  return page.evaluate(
+    ({ innerHtml }) => {
+      const sandbox = document.getElementById('measure-sandbox');
+      sandbox.className = 'measure-stage';
+      sandbox.innerHTML = innerHtml;
+
+      function getLastContentBottom(root) {
+        const lyrics = root?.querySelector('.song-lyrics');
+        if (!lyrics) {
+          return root?.getBoundingClientRect().bottom ?? 0;
+        }
+
+        const lastNode = lyrics.querySelector('.lyrics-line:last-child, .missing:last-child, .lyrics-spacer:last-child');
+        return (lastNode || lyrics).getBoundingClientRect().bottom;
+      }
+
+      function columnOverflows(side) {
+        const column = sandbox.querySelector(`.flow-column-${side}`);
+        const pane = column?.querySelector('.flow-pane');
+
+        if (!column || !pane) {
+          return false;
+        }
+
+        const columnRect = column.getBoundingClientRect();
+        const contentBottom = getLastContentBottom(pane);
+        return Math.ceil(contentBottom + 1) > Math.floor(columnRect.bottom - 2);
+      }
+
+      const overflow = columnOverflows('right') || columnOverflows('left');
+      sandbox.innerHTML = '';
+      sandbox.className = 'measure-column';
+      return overflow;
+    },
+    {
+      innerHtml: html,
+    }
+  );
+}
+
+async function refineFlowSplitToFit(page, song, fontClass, split, metrics, headerHeight, tokenHeights) {
+  const limit = Math.max(0, metrics.bodyHeightPx - metrics.safetyPx);
+  let startCount = split.startCount;
+  let estimatedStartHeight = headerHeight + split.startTextHeight;
+  let estimatedContinueHeight = split.continueTextHeight;
+
+  while (startCount > 0 && estimatedStartHeight > limit) {
+    const movedHeight = tokenHeights[startCount - 1] || 0;
+    startCount -= 1;
+    estimatedStartHeight -= movedHeight;
+    estimatedContinueHeight += movedHeight;
   }
 
-  const startHeight = startTokens.length
-    ? await measureFlowPaneHeight(page, song, fontClass, startTokens, true)
-    : Infinity;
-  const continueHeight = continueTokens.length
+  if (startCount <= 0 || estimatedContinueHeight > limit) {
+    return {
+      startTokens: split.startTokens,
+      continueTokens: split.continueTokens,
+      startHeight: Infinity,
+      continueHeight: estimatedContinueHeight,
+      fits: false,
+    };
+  }
+
+  let startTokens = song.tokens.slice(0, startCount);
+  let continueTokens = song.tokens.slice(startCount);
+  let startHeight = await measureFlowPaneHeight(page, song, fontClass, startTokens, true);
+  let continueHeight = continueTokens.length
     ? await measureFlowPaneHeight(page, song, fontClass, continueTokens, false)
     : 0;
+
+  while (startCount > 0 && startHeight > limit) {
+    const movedHeight = tokenHeights[startCount - 1] || 0;
+    startCount -= 1;
+    estimatedStartHeight -= movedHeight;
+    estimatedContinueHeight += movedHeight;
+    startTokens = song.tokens.slice(0, startCount);
+    continueTokens = song.tokens.slice(startCount);
+    startHeight = startTokens.length
+      ? await measureFlowPaneHeight(page, song, fontClass, startTokens, true)
+      : Infinity;
+    continueHeight = continueTokens.length
+      ? await measureFlowPaneHeight(page, song, fontClass, continueTokens, false)
+      : 0;
+  }
 
   return {
     startTokens,
@@ -1049,7 +1253,13 @@ async function refineFlowSplitToFit(page, song, fontClass, split, metrics) {
   };
 }
 
-async function measureFlowSong(page, song, fontClass, metrics) {
+async function measureFlowSong(page, song, fontClass, metrics, measureCache = null) {
+  const cacheKey = getSongVariantCacheKey(song, fontClass);
+
+  if (measureCache?.flowLayouts?.has(cacheKey)) {
+    return measureCache.flowLayouts.get(cacheKey);
+  }
+
   const directionClass = song.isHebrew ? 'rtl' : 'ltr';
   const headerHtml = `
     <div class="flow-pane ${directionClass} ${fontClass}">
@@ -1091,37 +1301,108 @@ async function measureFlowSong(page, song, fontClass, metrics) {
   const firstLimit = Math.max(0, metrics.bodyHeightPx - headerHeight - metrics.safetyPx);
   const secondLimit = Math.max(0, metrics.bodyHeightPx - metrics.safetyPx);
   const split = splitSongTokensByMeasuredHeights(song.tokens, tokenHeights, firstLimit, secondLimit);
-  const refined = await refineFlowSplitToFit(page, song, fontClass, split, metrics);
+  const refined = await refineFlowSplitToFit(page, song, fontClass, split, metrics, headerHeight, tokenHeights);
 
-  return {
+  const measuredLayout = {
     headerHeight,
     ...refined,
   };
+
+  if (measureCache?.flowLayouts) {
+    measureCache.flowLayouts.set(cacheKey, measuredLayout);
+  }
+
+  return measuredLayout;
 }
 
-async function measureAllSongs(page, songs, metrics) {
+async function ensureFlowFallback(page, layout, metrics, measureCache = null) {
+  if (layout.flowFallback) {
+    return layout.flowFallback;
+  }
+
+  const flowLayout = await measureFlowSong(page, layout.song, layout.fontClass, metrics, measureCache);
+
+  if (!flowLayout.fits) {
+    return null;
+  }
+
+  layout.flowFallback = {
+    mode: 'flow',
+    song: layout.song,
+    fontClass: layout.fontClass,
+    startColumn: layout.startColumn,
+    startTokens: flowLayout.startTokens,
+    continueTokens: flowLayout.continueTokens,
+  };
+
+  return layout.flowFallback;
+}
+
+async function measureAllSongs(page, songs, metrics, measureCache = null) {
   const layouts = [];
+  const compactLimit =
+    metrics.bodyHeightPx -
+    Math.max(metrics.safetyPx, metrics.compactSafetyPx || 0) -
+    (metrics.songsPerPage === 1 ? metrics.singleSongCompactExtraPx || 0 : 0);
+  const compactComfortLimit = compactLimit - (metrics.compactComfortPx || 0);
+  const flowRenderValidationLimit =
+    metrics.bodyHeightPx - metrics.safetyPx - (metrics.renderValidationPx || 0);
+  const leftoverFlowFallbackThreshold = compactComfortLimit - 64;
+  const obviousLongSongTokenCount = 140;
+  const obviousLongSongHeightRatio = 3.1;
 
   for (const song of songs) {
     const startColumn = song.isHebrew ? 'right' : 'left';
     let selectedLayout = null;
     let fallbackFlowLayout = null;
+    let skipCompactChecks = false;
 
     for (const variant of FONT_VARIANTS) {
-      const compactHeight = await measureCompactSong(page, song, variant.className);
+      let compactHeight = null;
 
-      if (compactHeight <= metrics.bodyHeightPx - metrics.safetyPx) {
-        selectedLayout = {
-          mode: 'compact',
-          song,
-          fontClass: variant.className,
-          startColumn,
-          tokens: song.tokens,
-        };
-        break;
+      if (!skipCompactChecks) {
+        compactHeight = await measureCompactSong(page, song, variant.className, measureCache);
+
+        if (compactHeight <= compactComfortLimit) {
+          let flowFallback = null;
+
+          if (metrics.songsPerPage === 2 && compactHeight >= leftoverFlowFallbackThreshold) {
+            const flowLayout = await measureFlowSong(page, song, variant.className, metrics, measureCache);
+
+            if (flowLayout.fits) {
+              flowFallback = {
+                mode: 'flow',
+                song,
+                fontClass: variant.className,
+                startColumn,
+                startTokens: flowLayout.startTokens,
+                continueTokens: flowLayout.continueTokens,
+              };
+            }
+          }
+
+          selectedLayout = {
+            mode: 'compact',
+            song,
+            fontClass: variant.className,
+            startColumn,
+            tokens: song.tokens,
+            measuredHeight: compactHeight,
+            flowFallback,
+          };
+          break;
+        }
+
+        if (
+          variant.className === 'font-regular' &&
+          (song.tokens.length >= obviousLongSongTokenCount ||
+            compactHeight >= compactLimit * obviousLongSongHeightRatio)
+        ) {
+          skipCompactChecks = true;
+        }
       }
 
-      const flowLayout = await measureFlowSong(page, song, variant.className, metrics);
+      const flowLayout = await measureFlowSong(page, song, variant.className, metrics, measureCache);
       fallbackFlowLayout = {
         mode: 'flow',
         song,
@@ -1131,7 +1412,16 @@ async function measureAllSongs(page, songs, metrics) {
         continueTokens: flowLayout.continueTokens,
       };
 
-      if (flowLayout.fits) {
+      let flowPageOverflows = false;
+      const needsRenderedValidation =
+        flowLayout.startHeight > flowRenderValidationLimit ||
+        flowLayout.continueHeight > flowRenderValidationLimit;
+
+      if (flowLayout.fits && needsRenderedValidation) {
+        flowPageOverflows = await measureFlowPageOverflow(page, fallbackFlowLayout, metrics);
+      }
+
+      if (flowLayout.fits && !flowPageOverflows) {
         selectedLayout = fallbackFlowLayout;
         break;
       }
@@ -1154,8 +1444,8 @@ async function measureAllSongs(page, songs, metrics) {
 }
 
 async function resolveTocLayout(page, songs, songPages, metrics) {
-  let tocPages = [];
   let tocPageCount = 0;
+  let lastPages = [];
 
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const pageNumbers = buildSongPageNumbers(songPages, tocPageCount);
@@ -1163,19 +1453,67 @@ async function resolveTocLayout(page, songs, songPages, metrics) {
     const measuredRows = await measureTocRowHeights(page, tocRows);
     const nextPages = paginateTocRowsDeterministically(measuredRows, metrics);
 
-    tocPages = nextPages;
+    lastPages = nextPages;
 
     if (nextPages.length === tocPageCount) {
-      break;
+      return nextPages;
     }
 
     tocPageCount = nextPages.length;
   }
 
-  const finalPageNumbers = buildSongPageNumbers(songPages, tocPages.length);
-  const finalRows = buildTocRows(songs, finalPageNumbers);
-  const finalMeasuredRows = await measureTocRowHeights(page, finalRows);
-  return paginateTocRowsDeterministically(finalMeasuredRows, metrics);
+  return lastPages;
+}
+
+async function refineSingleColumnSpreadPages(page, songPages, metrics, measureCache = null) {
+  const nextPages = [];
+  const compactRenderValidationLimit =
+    metrics.bodyHeightPx -
+    Math.max(metrics.safetyPx, metrics.compactSafetyPx || 0) -
+    (metrics.singleSongCompactExtraPx || 0) -
+    (metrics.renderValidationPx || 0);
+
+  for (const pageEntry of songPages) {
+    if (pageEntry.layout !== 'spread') {
+      nextPages.push(pageEntry);
+      continue;
+    }
+
+    const occupiedSide = pageEntry.columns.right ? 'right' : pageEntry.columns.left ? 'left' : null;
+    const occupiedLayout = occupiedSide ? pageEntry.columns[occupiedSide] : null;
+    const hasSingleSpreadSong = Boolean(occupiedLayout) && !pageEntry.columns.right !== !pageEntry.columns.left;
+
+    if (!hasSingleSpreadSong) {
+      nextPages.push(pageEntry);
+      continue;
+    }
+
+    const needsRenderedValidation =
+      typeof occupiedLayout.measuredHeight !== 'number' ||
+      occupiedLayout.measuredHeight > compactRenderValidationLimit;
+    const overflow = needsRenderedValidation
+      ? await measureSingleSpreadOverflow(page, occupiedLayout, occupiedSide, metrics)
+      : false;
+
+    if (!overflow) {
+      nextPages.push(pageEntry);
+      continue;
+    }
+
+    const flowFallback = await ensureFlowFallback(page, occupiedLayout, metrics, measureCache);
+
+    if (flowFallback) {
+      nextPages.push({
+        layout: 'single',
+        song: flowFallback,
+      });
+      continue;
+    }
+
+    nextPages.push(pageEntry);
+  }
+
+  return nextPages;
 }
 
 function buildHtml(songPages, tocPages, metrics) {
@@ -1199,6 +1537,10 @@ export async function generatePdf(inputSongs, config = {}) {
   const songs = prepareSongs(inputSongs);
   const metrics = getPageMetrics(config);
   metrics.tocStartColumn = inferTocStartColumn(songs, config);
+  const measureCache = {
+    compactHeights: new Map(),
+    flowLayouts: new Map(),
+  };
 
   const browser = await puppeteer.launch({
     headless: 'new',
@@ -1212,11 +1554,12 @@ export async function generatePdf(inputSongs, config = {}) {
 
     await measurePageMetrics(page, metrics);
 
-    const songLayouts = await measureAllSongs(page, songs, metrics);
-    const songPages = paginateSongsDeterministically(songLayouts, metrics);
+    const songLayouts = await measureAllSongs(page, songs, metrics, measureCache);
+    let songPages = paginateSongsDeterministically(songLayouts, metrics);
+    songPages = await refineSingleColumnSpreadPages(page, songPages, metrics, measureCache);
     const tocPages = metrics.includeToc ? await resolveTocLayout(page, songs, songPages, metrics) : [];
 
-    await page.setContent(buildHtml(songPages, tocPages, metrics), { waitUntil: 'networkidle0' });
+    await page.setContent(buildHtml(songPages, tocPages, metrics), { waitUntil: 'domcontentloaded' });
 
     return await page.pdf({
       format: metrics.format,

@@ -165,6 +165,22 @@ Useful commands:
 - every printed songbook page now carries a centered running header in the format `Shir On - [playlist/collection/all songs]`
 - the printed TOC title now emphasizes the printed list name more strongly with a larger accent serif line and extra gap before the contents begin
 - the print route now honors playlist-aware print requests even when the frontend sends both `songIds` and `playlistId`, instead of accidentally dropping the selected songs and failing with an empty print scope
+- printed song cards now keep title, artist, album, and year together on one metadata line instead of stacking them across multiple lines
+- printed running headers and footer regions now center their content more cleanly inside the reserved header/footer space, and the page number keeps a clearer gap above `Back to Contents`
+- the print engine now avoids an extra stabilized TOC measurement pass, uses a conservative fast-path for obviously long songs, and reduces flow re-measure loops without changing the final layout rules
+- the printed one-line song metadata now uses slightly softer typography so the compact header reads more naturally without giving up the single-line format
+- print-time lyrics cleanup now removes structural marker lines such as `מעבר` and `פזמון`, strips a leading `פתיחה` marker, strips a trailing `סיום` marker, and drops leading chord-definition lines like `Cm6: x3x243`
+- printed running headers and footers now reserve even more breathing room, and `Back to Contents` remains visible with a larger gap below the page number
+- the same structural lyrics cleanup now applies to stored lyrics too, so future saves and startup repair remove those markers from the songs themselves instead of only hiding them in print
+- the running header is now omitted from the first TOC page because that page already has its own main title block
+- compact print fitting now uses a larger safety margin near the bottom of the page so last lyric lines are less likely to clip against the footer region
+- single-song print fitting now uses an extra bottom margin on top of that compact safety, so one-song pages promote to safer layouts before the last line can hit the footer
+- compact songs now also need a real comfort margin below the bottom limit; borderline songs are promoted into safer flow layouts instead of staying in one-column spread pages and clipping on the final line
+- when a compact song is left alone on its own spread page, the print engine now prefers a measured two-column flow fallback for borderline cases instead of leaving the second column empty and risking a clipped last line
+- single-song spread pages now go through an extra real spread-layout overflow check, and clipped pages are promoted to two-column flow before the final PDF render
+- empty lyric lines in print now use an even taller spacer, so blank-line breaks stand out more clearly without changing the line height of normal lyric rows
+- printed lyrics blocks now use a real bottom guard (`flow-root` plus bottom padding), and overflow validation checks the bottom of the last rendered lyric line instead of only the outer container
+- the print engine now caches repeated song+font measurements inside one PDF build, reuses computed flow fallbacks, and renders the final HTML with a lighter readiness wait so large prints finish faster without changing layout rules
 - the Library screen now remembers the last chosen playlist and filter state when you leave the page and return
 - the Songbook screen now remembers the last chosen playlist scope when you leave the page and return
 - the digital songbook now includes a search field above the TOC that filters visible songs and artist groups by song title, artist name, or album

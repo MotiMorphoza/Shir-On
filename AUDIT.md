@@ -81,6 +81,22 @@ What changed:
 - single-song printing can render lyrics in two columns for the supported layout
 - hidden overflow was removed from song cards and lyrics blocks
 - frontend print actions now send a smaller set of supported options
+- printed song headers now keep title, artist, album, and year on one line
+- printed running headers, page numbers, and `Back to Contents` links now sit more centrally within the reserved header/footer bands
+- the print engine now skips the old extra stabilized TOC pass, uses a conservative fast-path for obviously long songs, and performs fewer DOM re-measurements during flow refinement
+- the one-line printed song metadata received a lighter typographic pass so the compact line remains readable
+- print-time lyrics cleanup now strips structure-only labels such as `מעבר`, `פזמון`, leading `פתיחה`, trailing `סיום`, and leading chord-definition lines before pagination
+- header/footer breathing room was increased again so running headers, page numbers, and `Back to Contents` sit farther from the lyric content
+- the same lyrics-marker cleanup now runs on stored lyrics during saves and startup repair, so the song texts themselves are normalized instead of only the printed output
+- the running header no longer appears on the first TOC page because that page already carries the full title block
+- compact-song fit now uses a larger bottom safety margin so songs near the page limit are pushed earlier into smaller fonts or flow layout instead of clipping on the last line
+- one-song pages now apply an additional compact-fit buffer beyond that general margin, because clipped last lines are most noticeable when a single song owns the page
+- spread-page compact songs now also require a comfort margin beyond the raw fit threshold, so borderline songs move to safer flow layouts instead of staying in a single column and clipping at the bottom
+- leftover compact songs that end up alone on a spread page now promote into a measured flow fallback when available, so an empty second column can be used instead of clipping the last line in the only occupied column
+- single-song spread pages now go through an extra real spread-layout overflow check, and clipped pages are promoted to two-column flow before the final PDF render
+- printed blank-line separators now use an even taller dedicated spacer so stanza breaks read more clearly without loosening the regular lyric line spacing
+- printed lyrics blocks now keep a dedicated bottom guard, and spread/flow overflow validation now checks the last rendered lyric line instead of only the card/pane container bottom
+- repeated song+font measurements are now cached within a single PDF build, computed flow fallbacks are reused instead of being remeasured, and the final HTML render now waits only for DOM readiness because the print document has no external assets
 
 Why it mattered:
 - the engine previously forced two songs per page and could visually clip long songs

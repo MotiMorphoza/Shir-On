@@ -1,6 +1,7 @@
 import db from './index.js';
 import { normalize } from '../utils/normalize.js';
 import { decodeHtmlEntities } from '../utils/sanitize.js';
+import { cleanLyricsText } from '../utils/lyricsCleanup.js';
 
 function nextNormalized(value) {
   return normalize(String(value || ''));
@@ -180,6 +181,30 @@ export function repairLyricsUniqueness() {
 
     if (!existingUniqueIndex) {
       result.created_unique_index = 1;
+    }
+  });
+
+  repair();
+  return result;
+}
+
+export function repairLyricsFormatting() {
+  const result = {
+    lyrics: 0,
+  };
+
+  const repair = db.transaction(() => {
+    const lyricsRows = db.prepare('SELECT id, text FROM lyrics').all();
+
+    for (const lyrics of lyricsRows) {
+      const next = cleanLyricsText(lyrics.text);
+
+      if (next !== lyrics.text) {
+        db.prepare(
+          "UPDATE lyrics SET text = ?, updated_at = datetime('now') WHERE id = ?"
+        ).run(next, lyrics.id);
+        result.lyrics += 1;
+      }
     }
   });
 
